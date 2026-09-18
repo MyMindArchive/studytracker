@@ -196,6 +196,14 @@ export const PACE_WINDOW_WEEKS = 6;
  */
 const MIN_PACE_DAYS = 3;
 const DAY_MS = 86_400_000;
+/**
+ * Chart window when none is given: wide enough to hold the oldest project,
+ * but clamped. Projects here run from a fortnight to a few months, so a fixed
+ * 8 weeks either squeezes a long one or strands a short one in a sliver at the
+ * right edge.
+ */
+const MIN_CHART_WEEKS = 5;
+const MAX_CHART_WEEKS = 26;
 
 /** How much history the pace rests on. */
 export type VelocityConfidence = "none" | "thin" | "fair" | "good";
@@ -294,7 +302,7 @@ export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date, born?:
  * Idle weeks *after* the start still count, because a month off is a real part
  * of how fast a project is moving; `activePace` reports the other reading.
  */
-export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(), weeks = 8, mode?: RollupMode): VelocityRow[] {
+export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(), weeks?: number, mode?: RollupMode): VelocityRow[] {
   const subjects = nodes.filter((n) => n.parent_id === null);
   const current = computeRollup(nodes, mode);
   const born = birthTimes(nodes, history);
@@ -311,8 +319,17 @@ export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(
     if (cur === undefined || t < cur) startOf.set(sid, t);
   }
 
+  // Fit the window to the oldest project so a two-week project fills the chart
+  // and a five-month one still fits, instead of always drawing eight weeks.
+  let span = weeks;
+  if (span === undefined) {
+    const oldest = startOf.size ? Math.min(...startOf.values()) : nowMs;
+    const lived = Math.ceil((nowMs - oldest) / (7 * DAY_MS)) + 1;
+    span = Math.max(MIN_CHART_WEEKS, Math.min(MAX_CHART_WEEKS, lived));
+  }
+
   const weekEnds: Date[] = [];
-  for (let i = weeks - 1; i >= 0; i--) {
+  for (let i = span - 1; i >= 0; i--) {
     weekEnds.push(endOfWeek(addWeeks(now, -i), { weekStartsOn: WEEK_STARTS_ON }));
   }
   const snapshots = weekEnds.map((we) => {

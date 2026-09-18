@@ -370,12 +370,43 @@ describe("statistics", () => {
     ]);
     await setPct(db, l.id, 20, new Date(now.getTime() - 7 * 86_400_000).toISOString());
     await setPct(db, l.id, 40, now.toISOString());
-    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    // Window forced to 8 so this covers the blanking, not the auto-sizing.
+    const v = velocity(await listNodes(db), await listPctHistory(db), now, 8).find((r) => r.subjectId === s.id)!;
     expect(v.basisWeeks).toBeCloseTo(2, 5);
     expect(v.velocity).toBeCloseTo(20, 5);
-    // The eight-week chart leaves the pre-birth weeks blank rather than flat at 0.
+    expect(v.weekly.length).toBe(8);
+    // The chart leaves the pre-birth weeks blank rather than flat at 0.
     expect(v.weekly.slice(0, 5).every((w) => w.pct === null)).toBe(true);
     expect(v.weekly[v.weekly.length - 1].pct).toBe(40);
+  });
+
+  it("sizes the chart window to the oldest project, within bounds", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const young = await createNode(db, { parent_id: null, name: "Young" });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id = ?", [
+      new Date(now.getTime() - 3 * 86_400_000).toISOString(),
+      young.id,
+    ]);
+    // A three-day-old project must not collapse the chart to a single column.
+    let rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    expect(rows[0].weekly.length).toBe(5);
+
+    // A four-month project widens the window instead of cropping its history.
+    const old = await createNode(db, { parent_id: null, name: "Old" });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id = ?", [
+      new Date(now.getTime() - 120 * 86_400_000).toISOString(),
+      old.id,
+    ]);
+    rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    expect(rows[0].weekly.length).toBe(19); // ceil(120/7) + 1
+
+    // …but never past the cap, so a year-old project stays readable.
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id = ?", [
+      new Date(now.getTime() - 400 * 86_400_000).toISOString(),
+      old.id,
+    ]);
+    rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    expect(rows[0].weekly.length).toBe(26);
   });
 
   it("a task added today does not retroactively lower past weeks", async () => {

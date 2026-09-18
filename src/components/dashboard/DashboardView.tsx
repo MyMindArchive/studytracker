@@ -162,15 +162,25 @@ export function DashboardView() {
             <Empty>Percent history drives this once you start updating tasks.</Empty>
           ) : (
             <>
-              <div className="mt-2 h-40">
+              <div className="mt-2 h-60">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={velocityRows} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                  <LineChart data={velocityRows} margin={{ top: 8, right: 16, left: -20, bottom: 0 }}>
                     <CartesianGrid vertical={false} stroke="var(--border)" />
-                    <XAxis dataKey="week" tick={{ fontSize: 10, fill: "var(--muted)" }} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "var(--muted)" }} />
+                    <XAxis dataKey="week" tick={{ fontSize: 10, fill: "var(--muted)" }} interval="preserveStartEnd" minTickGap={16} />
+                    <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: "var(--muted)" }} />
                     <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => `${v}%`} />
                     {vel.map((v) => (
-                      <Line key={v.subjectId} type="monotone" dataKey={v.subjectId} name={v.name} stroke={v.color ?? "var(--accent)"} dot={{ r: 2, strokeWidth: 0, fill: v.color ?? "var(--accent)" }} strokeWidth={2} isAnimationActive={false} />
+                      <Line
+                        key={v.subjectId}
+                        type="monotone"
+                        dataKey={v.subjectId}
+                        name={v.name}
+                        stroke={v.color ?? "var(--accent)"}
+                        dot={paceDot(v.color ?? "var(--accent)", velocityRows.length - 1)}
+                        activeDot={{ r: 5 }}
+                        strokeWidth={2}
+                        isAnimationActive={false}
+                      />
                     ))}
                   </LineChart>
                 </ResponsiveContainer>
@@ -252,6 +262,28 @@ function fmtRemaining(weeks: number): string {
 function fmtEta(d: Date, now = new Date()): string {
   const sameYear = d.getFullYear() === now.getFullYear();
   return d.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+/**
+ * Small dot per week, fat ringed dot on the latest one — "where this project
+ * stands now" should be findable without reading the axis.
+ */
+function paceDot(color: string, lastIndex: number) {
+  return function Dot(props: { cx?: number; cy?: number; index?: number; key?: string }) {
+    const { cx, cy, index } = props;
+    if (cx == null || cy == null) return <g />;
+    const latest = index === lastIndex;
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={latest ? 5 : 2.5}
+        fill={color}
+        stroke={latest ? "var(--panel)" : "none"}
+        strokeWidth={latest ? 2 : 0}
+      />
+    );
+  };
 }
 
 const CONFIDENCE_DOT: Record<VelocityRow["confidence"], string> = {
