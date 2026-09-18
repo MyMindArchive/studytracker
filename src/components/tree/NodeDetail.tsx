@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Play, Trash2, Plus, CheckSquare } from "lucide-react";
+import { Play, Trash2, Plus, CheckSquare, CalendarPlus } from "lucide-react";
 import { addWeeks } from "date-fns";
 import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
@@ -7,6 +7,7 @@ import { Field, NumberInput } from "../ui/Field";
 import { Sparkline } from "../ui/Sparkline";
 import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
+import { LogTimeDialog } from "../time/LogTimeDialog";
 import type { DbNode } from "../../types";
 import { ROLLUP_MODES, SUBJECT_COLORS, type RollupMode } from "../../types";
 import { computeRollup, subjectIndex, childrenOf, ROLLUP_HELP, ROLLUP_LABEL } from "../../lib/rollup";
@@ -34,6 +35,7 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
   const renameChecklistItem = useApp((s) => s.renameChecklistItem);
   const deleteChecklistItem = useApp((s) => s.deleteChecklistItem);
   const [itemDraft, setItemDraft] = useState("");
+  const [logOpen, setLogOpen] = useState(false);
 
   const settingsMode = useApp((s) => s.settings.rollup_mode);
   const children = useMemo(() => (id ? childrenOf(nodes).get(id) ?? [] : []), [nodes, id]);
@@ -348,11 +350,16 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
       </div>
 
       <div className="card">
-        <div className="section-title mb-2">
-          Sessions <span className="text-muted">({nodeSessions.length})</span>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="section-title">
+            Sessions <span className="text-muted">({nodeSessions.length})</span>
+          </span>
+          <button className="btn btn-sm" onClick={() => setLogOpen(true)} title="Record hours worked away from the timer">
+            <CalendarPlus size={12} /> Log time
+          </button>
         </div>
         {nodeSessions.length === 0 ? (
-          <div className="text-xs text-muted">No sessions yet.</div>
+          <div className="text-xs text-muted">No sessions yet. Already put hours into this? Use Log time.</div>
         ) : (
           <ul className="flex max-h-72 flex-col divide-y divide-[var(--border)] overflow-y-auto text-sm">
             {nodeSessions.slice(0, 100).map((s) => (
@@ -381,6 +388,8 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
           </ul>
         )}
       </div>
+
+      <LogTimeDialog open={logOpen} onOpenChange={setLogOpen} nodeId={node.id} />
     </div>
   );
 }

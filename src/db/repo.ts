@@ -402,6 +402,34 @@ export async function insertSession(db: SqlDriver, s: Omit<Session, "id"> & { id
   return full;
 }
 
+/** Column order shared by both session inserts. */
+const SESSION_INSERT_SQL = `INSERT INTO sessions (id,node_id,cycle_id,mode,planned_seconds,actual_seconds,started_at,ended_at,ended_reason,note)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`;
+
+function sessionValues(s: Session): unknown[] {
+  return [s.id, s.node_id, s.cycle_id, s.mode, s.planned_seconds, s.actual_seconds, s.started_at, s.ended_at, s.ended_reason, s.note];
+}
+
+/**
+ * Insert many sessions in one transaction — used when backfilling time that
+ * was worked before (or outside) the timer, which can be dozens of rows.
+ */
+export async function insertSessions(db: SqlDriver, list: (Omit<Session, "id"> & { id?: string })[]): Promise<Session[]> {
+  if (list.length === 0) return [];
+  const known = new Set((await listNodes(db)).map((n) => n.id));
+  const full: Session[] = list.map((s) => ({
+    ...s,
+    id: s.id ?? uid(),
+    node_id: s.node_id && known.has(s.node_id) ? s.node_id : null,
+    planned_seconds: Math.max(0, Math.round(Number(s.planned_seconds) || 0)),
+    actual_seconds: Math.max(0, Math.round(Number(s.actual_seconds) || 0)),
+  }));
+  await db.transaction(async (tx) => {
+    for (const s of full) await tx.execute(SESSION_INSERT_SQL, sessionValues(s));
+  });
+  return full;
+}
+
 export async function assignSessions(db: SqlDriver, sessionIds: string[], nodeId: string | null): Promise<void> {
   if (sessionIds.length === 0) return;
   if (nodeId && !(await getNode(db, nodeId))) throw new Error("That task no longer exists");

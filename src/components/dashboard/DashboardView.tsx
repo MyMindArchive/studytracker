@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Flame } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useApp } from "../../store/app";
-import { hoursToday, plannedVsActual, sessionStats, thisWeekBySubject, timeBySubject, velocity, UNASSIGNED } from "../../lib/stats";
+import { hoursToday, plannedVsActual, sessionStats, thisWeekBySubject, timeBySubject, velocity, PACE_WINDOW_WEEKS, UNASSIGNED, type VelocityRow } from "../../lib/stats";
 import { fmtDuration, fmtHours } from "../../lib/time";
 import { ProgressBar } from "../ui/ProgressBar";
 import { cn } from "../../lib/cn";
@@ -29,8 +29,12 @@ export function DashboardView() {
   const velocityRows = useMemo(() => {
     const weeks = vel[0]?.weekly.map((w) => w.week) ?? [];
     return weeks.map((wk, i) => {
-      const row: Record<string, string | number> = { week: wk.slice(5) };
-      for (const v of vel) row[v.subjectId] = Math.round(v.weekly[i].pct * 10) / 10;
+      // null leaves a gap in the line for weeks before the project existed
+      const row: Record<string, string | number | null> = { week: wk.slice(5) };
+      for (const v of vel) {
+        const pct = v.weekly[i].pct;
+        row[v.subjectId] = pct === null ? null : Math.round(pct * 10) / 10;
+      }
       return row;
     });
   }, [vel]);
@@ -119,7 +123,7 @@ export function DashboardView() {
         </section>
 
         {/* Planned vs actual */}
-        <section className="card col-span-7">
+        <section className="card col-span-12">
           <div className="flex items-center justify-between">
             <h2 className="section-title">Planned vs actual</h2>
             <label className="flex items-center gap-1.5 text-xs text-muted">
@@ -149,8 +153,11 @@ export function DashboardView() {
         </section>
 
         {/* Velocity */}
-        <section className="card col-span-5">
-          <h2 className="section-title">Velocity</h2>
+        <section className="card col-span-12">
+          <div className="flex items-baseline justify-between">
+            <h2 className="section-title">Pace &amp; finish</h2>
+            <span className="text-[10px] text-muted">measured from each project&rsquo;s own start</span>
+          </div>
           {vel.length === 0 ? (
             <Empty>Percent history drives this once you start updating tasks.</Empty>
           ) : (
@@ -163,7 +170,7 @@ export function DashboardView() {
                     <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "var(--muted)" }} />
                     <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => `${v}%`} />
                     {vel.map((v) => (
-                      <Line key={v.subjectId} type="monotone" dataKey={v.subjectId} name={v.name} stroke={v.color ?? "var(--accent)"} dot={false} strokeWidth={2} isAnimationActive={false} />
+                      <Line key={v.subjectId} type="monotone" dataKey={v.subjectId} name={v.name} stroke={v.color ?? "var(--accent)"} dot={{ r: 2, strokeWidth: 0, fill: v.color ?? "var(--accent)" }} strokeWidth={2} isAnimationActive={false} />
                     ))}
                   </LineChart>
                 </ResponsiveContainer>
@@ -173,24 +180,25 @@ export function DashboardView() {
                   <tr>
                     <th className="py-1">Project</th>
                     <th className="py-1 text-right">Now</th>
-                    <th className="py-1 text-right">pts / wk</th>
-                    <th className="py-1 text-right">Weeks to 100</th>
+                    <th className="py-1 text-right" title="Percentage points gained per week, over the span in the last column">
+                      Pace <span className="font-normal opacity-70">pts/wk</span>
+                    </th>
+                    <th className="py-1 text-right">Finish</th>
+                    <th className="py-1 text-right" title="How much history the pace rests on">
+                      Based on
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {vel.map((v) => (
-                    <tr key={v.subjectId} className="border-t border-app">
-                      <td className="py-1">
-                        <span className="dot mr-1.5 h-2 w-2" style={{ background: v.color ?? "var(--accent)" }} />
-                        {v.name}
-                      </td>
-                      <td className="py-1 text-right tabular-nums">{v.currentPct.toFixed(1)}%</td>
-                      <td className="py-1 text-right tabular-nums">{v.velocity.toFixed(1)}</td>
-                      <td className="py-1 text-right tabular-nums">{v.forecastWeeks === null ? "–" : v.forecastWeeks === 0 ? "done" : `~${Math.ceil(v.forecastWeeks)}`}</td>
-                    </tr>
+                    <PaceRow key={v.subjectId} v={v} />
                   ))}
                 </tbody>
               </table>
+              <p className="mt-2 text-[10px] leading-4 text-muted">
+                Pace is the points you gained divided by the time it actually took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks
+                back). Weeks before a project existed are never averaged in.
+              </p>
             </>
           )}
         </section>
@@ -223,6 +231,83 @@ function fmtAxisHours(v: number): string {
     return `${Number.isInteger(m) ? m : m.toFixed(1).replace(/\.0$/, "")}m`;
   }
   return `${Number.isInteger(v) ? v : v.toFixed(1)}h`;
+}
+
+/* --------------------------------------------------------------- pace */
+
+/** "3 days", "1.0 wk", "6 wk" — the span a pace was measured over. */
+function fmtSpan(weeks: number): string {
+  if (weeks < 1) return `${Math.max(1, Math.round(weeks * 7))} d`;
+  return `${weeks < 3 ? weeks.toFixed(1) : Math.round(weeks)} wk`;
+}
+
+/** "~2 wk", "<1 wk", "9 mo" — never a precision the number does not have. */
+function fmtRemaining(weeks: number): string {
+  if (weeks < 1) return "<1 wk";
+  if (weeks < 8) return `~${Math.round(weeks)} wk`;
+  if (weeks < 52) return `~${Math.round(weeks / 4.345)} mo`;
+  return "over a year";
+}
+
+function fmtEta(d: Date, now = new Date()): string {
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+const CONFIDENCE_DOT: Record<VelocityRow["confidence"], string> = {
+  none: "bg-muted opacity-40",
+  thin: "bg-warn",
+  fair: "bg-accent",
+  good: "bg-ok",
+};
+
+const CONFIDENCE_WHY: Record<VelocityRow["confidence"], string> = {
+  none: "Nothing has moved yet, so there is no pace to measure.",
+  thin: "Only one week of real movement so far — one good or bad week will swing this a lot.",
+  fair: "A few weeks of movement. Usable, still jumpy.",
+  good: "Several weeks of steady movement behind this.",
+};
+
+function PaceRow({ v }: { v: VelocityRow }) {
+  const done = v.currentPct >= 100;
+  const why = [
+    `${v.gained >= 0 ? "+" : ""}${v.gained.toFixed(1)} points over ${fmtSpan(v.basisWeeks)}`,
+    `${v.activeWeeks} week${v.activeWeeks === 1 ? "" : "s"} of that moved (${v.activePace.toFixed(1)} pts/wk while working)`,
+    v.startedAt ? `started ${fmtEta(v.startedAt)}` : null,
+    CONFIDENCE_WHY[v.confidence],
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <tr className="border-t border-app" title={why}>
+      <td className="max-w-0 truncate py-1">
+        <span className="dot mr-1.5 h-2 w-2" style={{ background: v.color ?? "var(--accent)" }} />
+        {v.name}
+      </td>
+      <td className="py-1 text-right tabular-nums">{v.currentPct.toFixed(1)}%</td>
+      <td className={cn("py-1 text-right tabular-nums", v.velocity <= 0 && "text-muted")}>
+        {done ? "\u2013" : v.velocity >= 10 ? v.velocity.toFixed(0) : v.velocity.toFixed(1)}
+      </td>
+      <td className="py-1 text-right">
+        {done ? (
+          <span className="text-ok">done</span>
+        ) : v.forecastWeeks === null || v.etaDate === null ? (
+          <span className="text-muted">stalled</span>
+        ) : (
+          <span className="whitespace-nowrap tabular-nums">
+            {fmtRemaining(v.forecastWeeks)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
+          </span>
+        )}
+      </td>
+      <td className="py-1 text-right">
+        <span className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap tabular-nums text-muted">
+          {fmtSpan(v.basisWeeks)}
+          <span className={cn("dot h-1.5 w-1.5", CONFIDENCE_DOT[v.confidence])} />
+        </span>
+      </td>
+    </tr>
+  );
 }
 
 const tooltipStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--fg)" };

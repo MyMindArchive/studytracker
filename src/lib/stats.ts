@@ -185,22 +185,91 @@ export function plannedVsActual(nodes: DbNode[], sessions: Session[], roll?: Map
 
 /* ----------------------------------------------------------- velocity */
 
+/**
+ * How far back the pace looks. Work older than this should not keep holding a
+ * project's forecast down once the pace has changed.
+ */
+export const PACE_WINDOW_WEEKS = 6;
+/**
+ * A span shorter than this is stretched to it before dividing, so half a day
+ * of work cannot imply a 200 pts/wk pace.
+ */
+const MIN_PACE_DAYS = 3;
+const DAY_MS = 86_400_000;
+
+/** How much history the pace rests on. */
+export type VelocityConfidence = "none" | "thin" | "fair" | "good";
+
 export interface VelocityRow {
   subjectId: string;
   name: string;
   color: string | null;
   currentPct: number;
-  /** pct at the end of each week (oldest first) */
-  weekly: { week: string; pct: number }[];
-  /** average pct points per week over the trailing window */
+  /** pct at the end of each week (oldest first); null for weeks before the project existed */
+  weekly: { week: string; pct: number | null }[];
+  /** percentage points per week, measured over `basisWeeks` — never over empty weeks before the start */
   velocity: number;
-  /** naive weeks remaining to 100 at current velocity; null if velocity <= 0 or done */
+  /** pace counting only the weeks that actually moved */
+  activePace: number;
+  /** percentage points gained over the measured span */
+  gained: number;
+  /** length of the measured span in weeks (fractional); starts at the project, not 8 weeks ago */
+  basisWeeks: number;
+  /** whole weeks inside the span that moved forward */
+  activeWeeks: number;
+  /** weeks to 100 at `velocity`; 0 when done, null when stalled or going backwards */
   forecastWeeks: number | null;
+  /** projected finish date; null whenever `forecastWeeks` is */
+  etaDate: Date | null;
+  confidence: VelocityConfidence;
+  /** first moment this project had anything to measure */
+  startedAt: Date | null;
 }
 
-/** Rebuild leaf pct as of a timestamp using pct_history (0 if no history yet). */
-export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date): DbNode[] {
+/**
+ * Earliest moment each node is known to have existed: its `created_at`, an
+ * older percent-history row if one exists (imported data can disagree), or the
+ * birth of its earliest descendant — a parent cannot post-date its own child.
+ */
+function birthTimes(nodes: DbNode[], history: PctHistory[]): Map<string, number> {
+  const born = new Map<string, number>();
+  for (const n of nodes) {
+    const t = fromIso(n.created_at).getTime();
+    born.set(n.id, Number.isFinite(t) ? t : 0);
+  }
+  for (const h of history) {
+    const t = fromIso(h.changed_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    const cur = born.get(h.node_id);
+    if (cur === undefined || t < cur) born.set(h.node_id, t);
+  }
+  // Pull every ancestor back to its earliest descendant, so a snapshot that
+  // keeps a task never drops the project it hangs under.
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const n of nodes) {
+    const t = born.get(n.id)!;
+    let p = n.parent_id;
+    const seen = new Set<string>([n.id]);
+    while (p && !seen.has(p)) {
+      seen.add(p);
+      const cur = born.get(p);
+      if (cur !== undefined && cur <= t) break;
+      born.set(p, t);
+      p = byId.get(p)?.parent_id ?? null;
+    }
+  }
+  return born;
+}
+
+/**
+ * Rebuild leaf pct as of a timestamp using pct_history (0 if no history yet).
+ * Tasks that did not exist yet are left out: a task added today sitting at 0 %
+ * would otherwise be folded into every past week, dragging the old percentages
+ * down and making the project look like it suddenly sped up.
+ */
+export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date, born?: Map<string, number>): DbNode[] {
   const t = at.getTime();
+  const birth = born ?? birthTimes(nodes, history);
   const latest = new Map<string, { t: number; pct: number }>();
   for (const h of history) {
     const ht = fromIso(h.changed_at).getTime();
@@ -208,30 +277,116 @@ export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date): DbNod
     const cur = latest.get(h.node_id);
     if (!cur || ht >= cur.t) latest.set(h.node_id, { t: ht, pct: h.pct });
   }
-  return nodes.map((n) => ({ ...n, pct_complete: latest.get(n.id)?.pct ?? 0 }));
+  return nodes
+    .filter((n) => (birth.get(n.id) ?? 0) <= t)
+    .map((n) => ({ ...n, pct_complete: latest.get(n.id)?.pct ?? 0 }));
 }
 
-export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(), weeks = 8, window = 4, mode?: RollupMode): VelocityRow[] {
+/**
+ * Pace and finish date per project.
+ *
+ * The pace is `points gained ÷ time it took`, measured from whichever is later:
+ * the moment the project started, or `PACE_WINDOW_WEEKS` ago. Weeks before a
+ * project existed are never averaged in — that is what used to turn "35 % in
+ * one week" into "8 weeks to go" (a 35-point jump divided across four weeks,
+ * three of which the project did not exist for).
+ *
+ * Idle weeks *after* the start still count, because a month off is a real part
+ * of how fast a project is moving; `activePace` reports the other reading.
+ */
+export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(), weeks = 8, mode?: RollupMode): VelocityRow[] {
   const subjects = nodes.filter((n) => n.parent_id === null);
   const current = computeRollup(nodes, mode);
+  const born = birthTimes(nodes, history);
+  const subjOf = subjectIndex(nodes);
+  const nowMs = now.getTime();
+
+  // When each project first had anything to measure.
+  const startOf = new Map<string, number>();
+  for (const n of nodes) {
+    const sid = subjOf.get(n.id)?.id;
+    if (!sid) continue;
+    const t = born.get(n.id) ?? nowMs;
+    const cur = startOf.get(sid);
+    if (cur === undefined || t < cur) startOf.set(sid, t);
+  }
+
   const weekEnds: Date[] = [];
   for (let i = weeks - 1; i >= 0; i--) {
     weekEnds.push(endOfWeek(addWeeks(now, -i), { weekStartsOn: WEEK_STARTS_ON }));
   }
   const snapshots = weekEnds.map((we) => {
-    const at = we.getTime() > now.getTime() ? now : we;
-    return { week: weekKey(we), roll: computeRollup(pctAsOf(nodes, history, at), mode) };
+    const at = we.getTime() > nowMs ? now : we;
+    return { week: weekKey(we), at: at.getTime(), roll: computeRollup(pctAsOf(nodes, history, at, born), mode) };
   });
+
+  // Several projects usually share the same clamped window start; roll up once each.
+  const rollAt = new Map<number, Map<string, NodeRollup>>();
+  const rollupAt = (ms: number) => {
+    let r = rollAt.get(ms);
+    if (!r) {
+      r = computeRollup(pctAsOf(nodes, history, new Date(ms), born), mode);
+      rollAt.set(ms, r);
+    }
+    return r;
+  };
+
   return subjects.map((s) => {
-    const weekly = snapshots.map((sn) => ({ week: sn.week, pct: sn.roll.get(s.id)?.pct ?? 0 }));
-    const deltas: number[] = [];
-    for (let i = Math.max(1, weekly.length - window); i < weekly.length; i++) deltas.push(weekly[i].pct - weekly[i - 1].pct);
-    const v = deltas.length ? deltas.reduce((a, b) => a + b, 0) / deltas.length : 0;
+    const startedMs = startOf.get(s.id) ?? nowMs;
+    const startedAt = startOf.has(s.id) ? new Date(startedMs) : null;
+    const weekly = snapshots.map((sn) => ({
+      week: sn.week,
+      pct: sn.at < startedMs ? null : (sn.roll.get(s.id)?.pct ?? 0),
+    }));
+
     const cur = current.get(s.id)?.pct ?? 0;
-    const forecast = cur >= 100 ? 0 : v > 0 ? (100 - cur) / v : null;
-    return { subjectId: s.id, name: s.name, color: s.color, currentPct: cur, weekly, velocity: v, forecastWeeks: forecast };
+    const spanStartMs = Math.max(startedMs, nowMs - PACE_WINDOW_WEEKS * 7 * DAY_MS);
+    const pctThen = rollupAt(spanStartMs).get(s.id)?.pct ?? 0;
+    const gained = cur - pctThen;
+    const basisWeeks = Math.max((nowMs - spanStartMs) / DAY_MS, MIN_PACE_DAYS) / 7;
+    const v = gained / basisWeeks;
+
+    let activeWeeks = 0;
+    for (let i = 1; i < weekly.length; i++) {
+      if (snapshots[i].at < spanStartMs) continue;
+      const b = weekly[i].pct;
+      if (b === null) continue;
+      if (b - (weekly[i - 1].pct ?? 0) > 0.05) activeWeeks++;
+    }
+    // All of the gain can land inside a single part-week that has no delta yet.
+    if (activeWeeks === 0 && gained > 0.05) activeWeeks = 1;
+    const activePace = activeWeeks > 0 ? gained / activeWeeks : 0;
+
+    const forecastWeeks = cur >= 100 ? 0 : v > 0 ? (100 - cur) / v : null;
+    const etaDate = forecastWeeks === null ? null : new Date(nowMs + forecastWeeks * 7 * DAY_MS);
+    const confidence: VelocityConfidence =
+      gained <= 0.05
+        ? "none"
+        : basisWeeks < 1 || activeWeeks <= 1
+          ? "thin"
+          : basisWeeks >= 3 && activeWeeks >= 3
+            ? "good"
+            : "fair";
+
+    return {
+      subjectId: s.id,
+      name: s.name,
+      color: s.color,
+      currentPct: cur,
+      weekly,
+      velocity: v,
+      activePace,
+      gained,
+      basisWeeks,
+      activeWeeks,
+      forecastWeeks,
+      etaDate,
+      confidence,
+      startedAt,
+    };
   });
 }
+
 
 /* ------------------------------------------------------ session stats */
 

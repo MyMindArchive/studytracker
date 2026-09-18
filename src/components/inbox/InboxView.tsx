@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { CalendarPlus, Trash2 } from "lucide-react";
 import { useApp } from "../../store/app";
 import { NodePicker } from "../ui/NodePicker";
+import { LogTimeDialog } from "../time/LogTimeDialog";
 import { fmtDuration, fmtHours, fromIso } from "../../lib/time";
 import { unassignedHours } from "../../lib/stats";
 import { cn } from "../../lib/cn";
@@ -14,6 +15,7 @@ export function InboxView() {
   const deleteSession = useApp((s) => s.deleteSession);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
 
   const unassigned = useMemo(() => sessions.filter((s) => !s.node_id), [sessions]);
   const hours = unassignedHours(sessions);
@@ -38,6 +40,10 @@ export function InboxView() {
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <button className="btn" onClick={() => setLogOpen(true)} title="Record hours worked away from the timer">
+            <CalendarPlus size={14} /> Log time
+          </button>
+          <span className="mx-1 h-6 w-px bg-[var(--border)]" />
           <span className="text-xs text-muted">{selected.size} selected →</span>
           <NodePicker value={target} onChange={setTarget} emptyLabel="choose target task" className="input w-64" />
           <button
@@ -114,6 +120,7 @@ export function InboxView() {
           </table>
         </div>
       )}
+      <LogTimeDialog open={logOpen} onOpenChange={setLogOpen} />
     </div>
   );
 }

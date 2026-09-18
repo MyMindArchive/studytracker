@@ -341,6 +341,60 @@ describe("statistics", () => {
     expect(v.velocity).toBeCloseTo(10, 5);
     expect(v.forecastWeeks).toBeCloseTo(5, 5);
   });
+
+  it("paces a one-week-old project over that week, not over the empty weeks before it", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const born = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+    const s = await createNode(db, { parent_id: null, name: "Fresh", id: "fresh" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    // Backdate creation so the project is exactly one week old.
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [born, s.id, l.id]);
+    await setPct(db, l.id, 35, now.toISOString());
+
+    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    expect(v.currentPct).toBe(35);
+    expect(v.basisWeeks).toBeCloseTo(1, 5);
+    expect(v.velocity).toBeCloseTo(35, 5); // not 8.75
+    expect(v.forecastWeeks).toBeCloseTo(65 / 35, 5); // ~2 weeks, not ~8
+    expect(v.confidence).toBe("thin");
+  });
+
+  it("never averages in the weeks before a project existed", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Old" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [
+      new Date(now.getTime() - 14 * 86_400_000).toISOString(),
+      s.id,
+      l.id,
+    ]);
+    await setPct(db, l.id, 20, new Date(now.getTime() - 7 * 86_400_000).toISOString());
+    await setPct(db, l.id, 40, now.toISOString());
+    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    expect(v.basisWeeks).toBeCloseTo(2, 5);
+    expect(v.velocity).toBeCloseTo(20, 5);
+    // The eight-week chart leaves the pre-birth weeks blank rather than flat at 0.
+    expect(v.weekly.slice(0, 5).every((w) => w.pct === null)).toBe(true);
+    expect(v.weekly[v.weekly.length - 1].pct).toBe(40);
+  });
+
+  it("a task added today does not retroactively lower past weeks", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Grow" });
+    const a = await createNode(db, { parent_id: s.id, name: "A" });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [
+      new Date(now.getTime() - 14 * 86_400_000).toISOString(),
+      s.id,
+      a.id,
+    ]);
+    await setPct(db, a.id, 100, new Date(now.getTime() - 7 * 86_400_000).toISOString());
+    // A brand new sibling at 0 % must not make last week look like 50 %.
+    await createNode(db, { parent_id: s.id, name: "B" });
+    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    const lastWeek = v.weekly[v.weekly.length - 2];
+    expect(lastWeek.pct).toBe(100);
+    expect(v.currentPct).toBe(50);
+  });
 });
 
 describe("csv + xlsx", () => {

@@ -97,6 +97,8 @@ interface AppState {
 
   // sessions
   logSession(s: Omit<Session, "id">): Promise<Session>;
+  /** Backfill several sessions at once (time worked before or outside the timer). */
+  logSessions(list: Omit<Session, "id">[]): Promise<Session[]>;
   assignSessions(ids: string[], nodeId: string | null): Promise<void>;
   updateSessionNote(id: string, note: string | null): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -393,6 +395,22 @@ export const useApp = create<AppState>((set, get) => {
 
     async logSession(s) {
       const full = await repo.insertSession(requireDb(), s);
+      await afterWrite();
+      return full;
+    },
+
+    async logSessions(list) {
+      const db = requireDb();
+      const full = await repo.insertSessions(db, list);
+      if (full.length) {
+        pushUndo({
+          label: full.length === 1 ? "logged time" : `${full.length} logged entries`,
+          run: async () => {
+            for (const s of full) await repo.deleteSession(db, s.id);
+            await afterWrite();
+          },
+        });
+      }
       await afterWrite();
       return full;
     },

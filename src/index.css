@@ -105,6 +105,9 @@ h1, h2, h3, .font-heading { font-family: var(--font-heading); }
 @utility text-ok { color: var(--ok); }
 @utility text-warn { color: var(--warn); }
 @utility bg-danger { background-color: var(--danger); }
+@utility bg-ok { background-color: var(--ok); }
+@utility bg-warn { background-color: var(--warn); }
+@utility bg-muted { background-color: var(--muted); }
 
 /* ---------------------------------------------------------- components
    In the components layer so Tailwind utilities on the same element still
