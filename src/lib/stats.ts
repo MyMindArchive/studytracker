@@ -191,10 +191,12 @@ export function plannedVsActual(nodes: DbNode[], sessions: Session[], roll?: Map
  */
 export const PACE_WINDOW_WEEKS = 6;
 /**
- * A span shorter than this is stretched to it before dividing, so half a day
- * of work cannot imply a 200 pts/wk pace.
+ * Below this much real history there is nothing to average, so the pace is
+ * withheld rather than guessed. Dividing 30 % by half a day of history once
+ * produced "420 pts/wk, done tomorrow" — a confident-looking number resting
+ * on one data point.
  */
-const MIN_PACE_DAYS = 3;
+export const MIN_PACE_DAYS = 3;
 const DAY_MS = 86_400_000;
 /**
  * Chart window when none is given: wide enough to hold the oldest project,
@@ -230,9 +232,19 @@ export interface VelocityRow {
   /** projected finish date; null whenever `forecastWeeks` is */
   etaDate: Date | null;
   confidence: VelocityConfidence;
+  /** what the finish column should say, so the UI does not re-derive it */
+  status: VelocityStatus;
   /** first moment this project had anything to measure */
   startedAt: Date | null;
 }
+
+/**
+ *  done     already at 100
+ *  too-new  less than MIN_PACE_DAYS of history — no honest rate exists yet
+ *  stalled  enough history, but nothing moved forward
+ *  ok       a real pace, so a finish date can be projected
+ */
+export type VelocityStatus = "done" | "too-new" | "stalled" | "ok";
 
 /**
  * Earliest moment each node is known to have existed: its `created_at`, an
@@ -302,21 +314,26 @@ export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date, born?:
  * Idle weeks *after* the start still count, because a month off is a real part
  * of how fast a project is moving; `activePace` reports the other reading.
  */
-export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(), weeks?: number, mode?: RollupMode): VelocityRow[] {
+export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Session[] = [], now = new Date(), weeks?: number, mode?: RollupMode): VelocityRow[] {
   const subjects = nodes.filter((n) => n.parent_id === null);
   const current = computeRollup(nodes, mode);
   const born = birthTimes(nodes, history);
   const subjOf = subjectIndex(nodes);
   const nowMs = now.getTime();
 
-  // When each project first had anything to measure.
+  // When each project first had anything to measure. Logged time counts as
+  // evidence of a start: backfilling hours from three weeks ago says the work
+  // began then, even though the project row was typed into the app today.
   const startOf = new Map<string, number>();
-  for (const n of nodes) {
-    const sid = subjOf.get(n.id)?.id;
-    if (!sid) continue;
-    const t = born.get(n.id) ?? nowMs;
+  const noteStart = (sid: string | undefined, t: number) => {
+    if (!sid || !Number.isFinite(t)) return;
     const cur = startOf.get(sid);
     if (cur === undefined || t < cur) startOf.set(sid, t);
+  };
+  for (const n of nodes) noteStart(subjOf.get(n.id)?.id, born.get(n.id) ?? nowMs);
+  for (const ss of creditedSessions(sessions)) {
+    if (!ss.node_id) continue; // inbox time belongs to no project yet
+    noteStart(subjOf.get(ss.node_id)?.id, fromIso(ss.started_at).getTime());
   }
 
   // Fit the window to the oldest project so a two-week project fills the chart
@@ -360,8 +377,10 @@ export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(
     const spanStartMs = Math.max(startedMs, nowMs - PACE_WINDOW_WEEKS * 7 * DAY_MS);
     const pctThen = rollupAt(spanStartMs).get(s.id)?.pct ?? 0;
     const gained = cur - pctThen;
-    const basisWeeks = Math.max((nowMs - spanStartMs) / DAY_MS, MIN_PACE_DAYS) / 7;
-    const v = gained / basisWeeks;
+    const spanDays = Math.max(0, (nowMs - spanStartMs) / DAY_MS);
+    const basisWeeks = spanDays / 7;
+    const tooNew = spanDays < MIN_PACE_DAYS;
+    const v = tooNew ? 0 : gained / basisWeeks;
 
     let activeWeeks = 0;
     for (let i = 1; i < weekly.length; i++) {
@@ -374,10 +393,11 @@ export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(
     if (activeWeeks === 0 && gained > 0.05) activeWeeks = 1;
     const activePace = activeWeeks > 0 ? gained / activeWeeks : 0;
 
-    const forecastWeeks = cur >= 100 ? 0 : v > 0 ? (100 - cur) / v : null;
-    const etaDate = forecastWeeks === null ? null : new Date(nowMs + forecastWeeks * 7 * DAY_MS);
+    const status: VelocityStatus = cur >= 100 ? "done" : tooNew ? "too-new" : v > 0 ? "ok" : "stalled";
+    const forecastWeeks = status === "done" ? 0 : status === "ok" ? (100 - cur) / v : null;
+    const etaDate = forecastWeeks === null || forecastWeeks === 0 ? null : new Date(nowMs + forecastWeeks * 7 * DAY_MS);
     const confidence: VelocityConfidence =
-      gained <= 0.05
+      tooNew || gained <= 0.05
         ? "none"
         : basisWeeks < 1 || activeWeeks <= 1
           ? "thin"
@@ -399,6 +419,7 @@ export function velocity(nodes: DbNode[], history: PctHistory[], now = new Date(
       forecastWeeks,
       etaDate,
       confidence,
+      status,
       startedAt,
     };
   });

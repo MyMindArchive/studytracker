@@ -337,7 +337,7 @@ describe("statistics", () => {
       await setPct(db, l.id, (5 - w) * 10, new Date(now.getTime() - w * 7 * 86_400_000).toISOString());
     }
     await setPct(db, l.id, 50, now.toISOString());
-    const v = velocity(await listNodes(db), await listPctHistory(db), now)[0];
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now)[0];
     expect(v.velocity).toBeCloseTo(10, 5);
     expect(v.forecastWeeks).toBeCloseTo(5, 5);
   });
@@ -351,7 +351,7 @@ describe("statistics", () => {
     await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [born, s.id, l.id]);
     await setPct(db, l.id, 35, now.toISOString());
 
-    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
     expect(v.currentPct).toBe(35);
     expect(v.basisWeeks).toBeCloseTo(1, 5);
     expect(v.velocity).toBeCloseTo(35, 5); // not 8.75
@@ -371,13 +371,80 @@ describe("statistics", () => {
     await setPct(db, l.id, 20, new Date(now.getTime() - 7 * 86_400_000).toISOString());
     await setPct(db, l.id, 40, now.toISOString());
     // Window forced to 8 so this covers the blanking, not the auto-sizing.
-    const v = velocity(await listNodes(db), await listPctHistory(db), now, 8).find((r) => r.subjectId === s.id)!;
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now, 8).find((r) => r.subjectId === s.id)!;
     expect(v.basisWeeks).toBeCloseTo(2, 5);
     expect(v.velocity).toBeCloseTo(20, 5);
     expect(v.weekly.length).toBe(8);
     // The chart leaves the pre-birth weeks blank rather than flat at 0.
     expect(v.weekly.slice(0, 5).every((w) => w.pct === null)).toBe(true);
     expect(v.weekly[v.weekly.length - 1].pct).toBe(40);
+  });
+
+  it("backfilled sessions move a project's start back, correcting the pace", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Econometrics" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    // Typed into the app today, at a percent earned over the previous month.
+    await setPct(db, l.id, 27.8, now.toISOString());
+
+    // With nothing but today's entry there is no honest rate.
+    const bare = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(bare.status).toBe("too-new");
+    expect(bare.forecastWeeks).toBeNull();
+    expect(bare.confidence).toBe("none");
+
+    // Backfill four weeks of work; the project demonstrably started then.
+    for (let d = 28; d >= 1; d -= 7) {
+      const started = new Date(now.getTime() - d * 86_400_000);
+      await insertSession(db, {
+        node_id: l.id,
+        cycle_id: null,
+        mode: "single",
+        planned_seconds: 3600,
+        actual_seconds: 3600,
+        started_at: started.toISOString(),
+        ended_at: new Date(started.getTime() + 3_600_000).toISOString(),
+        ended_reason: "completed",
+        note: null,
+      });
+    }
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
+    expect(v.status).toBe("ok");
+    expect(v.basisWeeks).toBeCloseTo(4, 5);
+    expect(v.velocity).toBeCloseTo(27.8 / 4, 5); // ~7 pts/wk, not ~65
+    expect(v.forecastWeeks).toBeCloseTo((100 - 27.8) / (27.8 / 4), 5);
+  });
+
+  it("withholds a pace under three days of history rather than inventing one", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Today" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await setPct(db, l.id, 48.3, now.toISOString());
+    const v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(v.status).toBe("too-new");
+    expect(v.velocity).toBe(0);
+    expect(v.etaDate).toBeNull();
+  });
+
+  it("discarded sessions are not evidence that a project started", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Ghost" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await setPct(db, l.id, 20, now.toISOString());
+    const started = new Date(now.getTime() - 30 * 86_400_000);
+    await insertSession(db, {
+      node_id: l.id,
+      cycle_id: null,
+      mode: "single",
+      planned_seconds: 1500,
+      actual_seconds: 0, // nothing credited
+      started_at: started.toISOString(),
+      ended_at: started.toISOString(),
+      ended_reason: "aborted_discarded",
+      note: null,
+    });
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
+    expect(v.status).toBe("too-new");
   });
 
   it("sizes the chart window to the oldest project, within bounds", async () => {
@@ -388,7 +455,7 @@ describe("statistics", () => {
       young.id,
     ]);
     // A three-day-old project must not collapse the chart to a single column.
-    let rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    let rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
     expect(rows[0].weekly.length).toBe(5);
 
     // A four-month project widens the window instead of cropping its history.
@@ -397,7 +464,7 @@ describe("statistics", () => {
       new Date(now.getTime() - 120 * 86_400_000).toISOString(),
       old.id,
     ]);
-    rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
     expect(rows[0].weekly.length).toBe(19); // ceil(120/7) + 1
 
     // …but never past the cap, so a year-old project stays readable.
@@ -405,7 +472,7 @@ describe("statistics", () => {
       new Date(now.getTime() - 400 * 86_400_000).toISOString(),
       old.id,
     ]);
-    rows = velocity(await listNodes(db), await listPctHistory(db), now);
+    rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
     expect(rows[0].weekly.length).toBe(26);
   });
 
@@ -421,7 +488,7 @@ describe("statistics", () => {
     await setPct(db, a.id, 100, new Date(now.getTime() - 7 * 86_400_000).toISOString());
     // A brand new sibling at 0 % must not make last week look like 50 %.
     await createNode(db, { parent_id: s.id, name: "B" });
-    const v = velocity(await listNodes(db), await listPctHistory(db), now).find((r) => r.subjectId === s.id)!;
+    const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
     const lastWeek = v.weekly[v.weekly.length - 2];
     expect(lastWeek.pct).toBe(100);
     expect(v.currentPct).toBe(50);

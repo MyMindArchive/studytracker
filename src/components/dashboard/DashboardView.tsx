@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Flame } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useApp } from "../../store/app";
-import { hoursToday, plannedVsActual, sessionStats, thisWeekBySubject, timeBySubject, velocity, PACE_WINDOW_WEEKS, UNASSIGNED, type VelocityRow } from "../../lib/stats";
+import { hoursToday, plannedVsActual, sessionStats, thisWeekBySubject, timeBySubject, velocity, PACE_WINDOW_WEEKS, MIN_PACE_DAYS, UNASSIGNED, type VelocityRow } from "../../lib/stats";
 import { fmtDuration, fmtHours } from "../../lib/time";
 import { ProgressBar } from "../ui/ProgressBar";
 import { cn } from "../../lib/cn";
@@ -23,7 +23,7 @@ export function DashboardView() {
   const week = useMemo(() => thisWeekBySubject(nodes, sessions, now), [nodes, sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   const series = useMemo(() => timeBySubject(nodes, sessions, period, now), [nodes, sessions, period]); // eslint-disable-line react-hooks/exhaustive-deps
   const pva = useMemo(() => plannedVsActual(nodes, sessions, rollup), [nodes, sessions, rollup]);
-  const vel = useMemo(() => velocity(nodes, history, now), [nodes, history]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vel = useMemo(() => velocity(nodes, history, sessions, now), [nodes, history, sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   const stats = useMemo(() => sessionStats(sessions, now), [sessions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const velocityRows = useMemo(() => {
@@ -207,7 +207,8 @@ export function DashboardView() {
               </table>
               <p className="mt-2 text-[10px] leading-4 text-muted">
                 Pace is the points you gained divided by the time it actually took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks
-                back). Weeks before a project existed are never averaged in.
+                back). A project starts at the earliest of its creation or its first logged session, so backfilling hours you already put in moves the start
+                back and corrects the pace. Under {MIN_PACE_DAYS} days of history there is nothing to average, so it reads &ldquo;too new&rdquo; instead of guessing.
               </p>
             </>
           )}
@@ -301,7 +302,6 @@ const CONFIDENCE_WHY: Record<VelocityRow["confidence"], string> = {
 };
 
 function PaceRow({ v }: { v: VelocityRow }) {
-  const done = v.currentPct >= 100;
   const why = [
     `${v.gained >= 0 ? "+" : ""}${v.gained.toFixed(1)} points over ${fmtSpan(v.basisWeeks)}`,
     `${v.activeWeeks} week${v.activeWeeks === 1 ? "" : "s"} of that moved (${v.activePace.toFixed(1)} pts/wk while working)`,
@@ -319,16 +319,20 @@ function PaceRow({ v }: { v: VelocityRow }) {
       </td>
       <td className="py-1 text-right tabular-nums">{v.currentPct.toFixed(1)}%</td>
       <td className={cn("py-1 text-right tabular-nums", v.velocity <= 0 && "text-muted")}>
-        {done ? "\u2013" : v.velocity >= 10 ? v.velocity.toFixed(0) : v.velocity.toFixed(1)}
+        {v.status === "ok" ? (v.velocity >= 10 ? v.velocity.toFixed(0) : v.velocity.toFixed(1)) : "\u2013"}
       </td>
       <td className="py-1 text-right">
-        {done ? (
+        {v.status === "done" ? (
           <span className="text-ok">done</span>
-        ) : v.forecastWeeks === null || v.etaDate === null ? (
+        ) : v.status === "too-new" ? (
+          <span className="text-muted" title={`Needs at least ${MIN_PACE_DAYS} days of history before a pace means anything. Log the hours you already put in and the project's start moves back with them.`}>
+            too new
+          </span>
+        ) : v.status === "stalled" || v.etaDate === null ? (
           <span className="text-muted">stalled</span>
         ) : (
           <span className="whitespace-nowrap tabular-nums">
-            {fmtRemaining(v.forecastWeeks)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
+            {fmtRemaining(v.forecastWeeks!)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
           </span>
         )}
       </td>
