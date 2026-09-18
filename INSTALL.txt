@@ -1,0 +1,41 @@
+StudyTracker - how to run it
+============================
+
+Your data stays on your computer. No account, no network.
+
+macOS (Intel or Apple silicon, macOS 12 or newer) - no installation needed
+--------------------------------------------------------------------------
+1. Double-click StudyTracker-mac.zip. You get StudyTracker.app. Keep it anywhere
+   (Desktop, Downloads, a USB stick) or drag it into Applications if you like.
+2. Double-click StudyTracker.app. macOS will refuse the first time because the app
+   is not signed by an Apple developer.
+3. Open System Settings > Privacy & Security, scroll down, click "Open Anyway"
+   next to StudyTracker, then confirm. Needed once only.
+   Older macOS: right-click the app > Open > Open.
+   Terminal alternative:  xattr -cr ~/Downloads/StudyTracker.app
+4. On first launch pick a data folder (default ~/StudyTracker). The database and CSV
+   mirrors live there; to move to another Mac, copy that folder.
+
+Windows 10 / 11
+---------------
+Option A - desktop app, no install: unzip StudyTracker-windows-portable.zip and
+   double-click StudyTracker.exe. Keep it anywhere. If SmartScreen says "Windows
+   protected your PC", click "More info" then "Run anyway" (needed once; the app is
+   not code-signed). On first launch pick a data folder (default
+   %USERPROFILE%\StudyTracker). Same folder layout as on macOS.
+Option B - installer: StudyTracker_<version>_x64-setup.exe installs for the current
+   user (no administrator rights) and adds a Start menu entry. Same SmartScreen click.
+Option C - browser edition, no install: unzip StudyTracker-windows-web.zip and
+   double-click StudyTracker.cmd. A small window (the local server) stays open and the
+   app opens in its own Edge/Chrome window. Data is kept in a private browser profile
+   on that PC; use Settings > Export .xlsx / Download .db for backups.
+   See README-Windows.txt inside the zip.
+
+Web (any computer, any OS)
+--------------------------
+StudyTracker-web.zip is a static site. Upload its contents to any static host
+(GitHub Pages, Netlify drop, Vercel, Cloudflare Pages) or run it locally with
+   npx serve .        (inside the unzipped folder)
+Opening index.html directly from the file system does not work; it needs a web server.
+In the browser version data lives in the browser (IndexedDB), the CSV mirror and the
+storage-folder picker are unavailable, and exports download instead of saving to disk.
