@@ -32,4 +32,13 @@ export const SKINS: SkinDef[] = [
     blurb: "Rounded pastel cards with gentle shadows. Light or dark.",
     swatch: ["#f4f1fb", "#ffffff", "#7c5cff", "#2a2540"],
   },
+  {
+    id: "press",
+    label: "Press",
+    blurb: "Newsprint and hazard red. Square corners, heavy rules, hard shadows.",
+    swatch: ["#eae8e3", "#f4f4f0", "#e61919", "#0a0a0a"],
+  },
 ];
+
+/** Every id the registry defines — the single source of truth for validation. */
+export const SKIN_IDS: readonly SkinId[] = SKINS.map((s) => s.id);

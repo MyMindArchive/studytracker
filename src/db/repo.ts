@@ -1,6 +1,7 @@
 import type { SqlDriver } from "./driver";
 import type { ChecklistItem, DbNode, MediaAsset, NodeStatus, PctHistory, RollupMode, Session, SessionSource, Settings, StatusHistory } from "../types";
 import { DEFAULT_SETTINGS, ROLLUP_MODES } from "../types";
+import { SKIN_IDS } from "../lib/skins";
 import { uid, nowIso } from "../lib/ids";
 
 /* ------------------------------------------------------------------ nodes */
@@ -548,7 +549,9 @@ export function sanitizeSettings(raw: Record<string, unknown>): Settings {
       longBreakMinutes: finiteOr(cd.longBreakMinutes, d.cycle_defaults.longBreakMinutes),
     },
     theme: oneOf(raw.theme, ["system", "light", "dark"] as const, d.theme),
-    skin: oneOf(raw.skin, ["clean", "terminal", "soft"] as const, d.skin),
+    // Read from the registry rather than a second copy of the list: a skin added
+    // to SKINS but missed here was silently reverted to the default on save.
+    skin: oneOf(raw.skin, SKIN_IDS, d.skin),
     sound: typeof raw.sound === "boolean" ? raw.sound : d.sound,
     unassigned_badge_threshold_hours: finiteOr(raw.unassigned_badge_threshold_hours, d.unassigned_badge_threshold_hours),
     csv_mirror: typeof raw.csv_mirror === "boolean" ? raw.csv_mirror : d.csv_mirror,

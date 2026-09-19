@@ -428,3 +428,97 @@ html[data-skin="soft"].dark {
   html[data-skin="soft"] .seg-item[data-active="true"] { background: var(--panel); box-shadow: var(--shadow-btn); }
   html[data-skin="soft"] .tile { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 }
+
+/* =====================================================================
+   Skin: Press — Swiss industrial print. Unbleached paper, carbon rules,
+   one hazard red. Square everything, visible compartmentalisation, hard
+   offset shadows. The loud one: structure is the decoration.
+   ===================================================================== */
+html[data-skin="press"] {
+  --bg: #eae8e3;
+  --panel: #f4f4f0;
+  --panel-2: #e0ded7;
+  /* Borders are carbon, not a tint of the background: compartments are meant
+     to be seen, which is the whole grammar of a printed manual. */
+  --border: #14140f;
+  --fg: #0a0a0a;
+  --muted: #5c5a54;
+  --accent: #e61919;
+  --accent-fg: #f4f4f0;
+  --accent-hover: #b81212;
+  --accent-2: #e61919;
+  --danger: #e61919;
+  /* No green anywhere: finished work is simply solid ink, and caution is the
+     amber of industrial signage. Three readings, two pigments plus ink. */
+  --ok: #14140f;
+  --warn: #a86a00;
+  --sel: #d8d5cc;
+  --note: #f2e8c9;
+
+  --r-sm: 0; --r-md: 0; --r-lg: 0; --r-pill: 0;
+  --bw: 2px;
+
+  --shadow-card: 3px 3px 0 var(--border);
+  --shadow-btn: 2px 2px 0 var(--border);
+  --shadow-pop: 6px 6px 0 var(--border);
+
+  /* Halftone: a dot screen rather than a smooth wash, so the substrate reads
+     as something that went through a press. */
+  --paper: radial-gradient(circle at 1px 1px, rgba(20, 20, 15, 0.13) 1px, transparent 0);
+  --paper-size: 4px 4px;
+  --dial-glow: 0;
+}
+html[data-skin="press"].dark {
+  --bg: #121210;
+  --panel: #1a1a18;
+  --panel-2: #24241f;
+  --border: #8a857a;
+  --fg: #f0ede6;
+  --muted: #98938a;
+  --accent: #ff2a2a;
+  --accent-fg: #121210;
+  --accent-hover: #ff5555;
+  --accent-2: #ff2a2a;
+  --danger: #ff2a2a;
+  --ok: #f0ede6;
+  --warn: #e0a030;
+  --sel: #2c2c26;
+  --note: #33301f;
+  /* A hard black offset is invisible on a carbon substrate, so on this side the
+     2px rules carry the structure on their own. */
+  --shadow-card: none;
+  --shadow-btn: none;
+  --shadow-pop: 0 0 0 2px var(--border);
+  --paper: radial-gradient(circle at 1px 1px, rgba(240, 237, 230, 0.07) 1px, transparent 0);
+  --paper-size: 4px 4px;
+}
+@layer components {
+  /* Type is the structure: headings are heavy uppercase blocks with negative
+     tracking, metadata is wide-tracked small caps. */
+  html[data-skin="press"] .brand { text-transform: uppercase; font-weight: 800; letter-spacing: -0.02em; }
+  html[data-skin="press"] .section-title { text-transform: uppercase; font-weight: 800; letter-spacing: 0.01em; }
+  html[data-skin="press"] .section-title::before { content: "//"; margin-right: 0.375rem; color: var(--accent); }
+  html[data-skin="press"] .table-head { letter-spacing: 0.12em; color: var(--fg); }
+  html[data-skin="press"] .h1, html[data-skin="press"] .stat { font-weight: 800; letter-spacing: -0.03em; }
+  html[data-skin="press"] .timer-digits { font-weight: 800; letter-spacing: -0.05em; }
+
+  html[data-skin="press"] .btn { text-transform: uppercase; font-weight: 700; letter-spacing: 0.06em; font-size: 0.75rem; }
+  /* The press: the button travels onto its own shadow instead of scaling. */
+  html[data-skin="press"] .btn:active { transform: translate(2px, 2px); box-shadow: none; }
+  html[data-skin="press"] .btn-primary { border-color: var(--border); }
+  html[data-skin="press"] .choice:active { transform: none; }
+
+  /* Selection is a solid stamp, not a tint. */
+  html[data-skin="press"] .nav-item[data-active="true"] { background: var(--fg); color: var(--bg); font-weight: 700; }
+  html[data-skin="press"] .nav-item { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.8125rem; }
+  html[data-skin="press"] .seg-item { text-transform: uppercase; letter-spacing: 0.06em; }
+  html[data-skin="press"] .seg-item[data-active="true"] { background: var(--fg); color: var(--bg); }
+  html[data-skin="press"] .tree-row[data-selected="true"] { background: transparent; box-shadow: inset 4px 0 0 var(--accent); }
+
+  html[data-skin="press"] .progress { border: var(--bw) solid var(--border); }
+  html[data-skin="press"] .switch-thumb { border-radius: 0; box-shadow: none; }
+  html[data-skin="press"] .tile { border: var(--bw) solid var(--border); background: transparent; }
+  html[data-skin="press"] .pill, html[data-skin="press"] .tag { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+  html[data-skin="press"] .round-btn { box-shadow: inset 0 0 0 2px var(--tint); background: transparent; text-transform: uppercase; font-weight: 700; letter-spacing: 0.06em; }
+  html[data-skin="press"] .round-btn:active { transform: translate(2px, 2px); }
+}

@@ -113,7 +113,7 @@ export interface CycleDefaults {
   longBreakMinutes: number;
 }
 
-export type SkinId = "clean" | "terminal" | "soft";
+export type SkinId = "clean" | "terminal" | "soft" | "press";
 
 /** A user-supplied file kept inline as a data: URL so both runtimes can use it. */
 export interface MediaAsset {

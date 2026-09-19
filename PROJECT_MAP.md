@@ -138,7 +138,9 @@ mirror.ts   mirrorFiles() / writeMirror() — regenerates nodes.csv, sessions.cs
             pct_history.csv, status_history.csv, checklist.csv, weekly_summary.csv.
             No-op outside Tauri.
 xlsx.ts     SheetJS workbook (frozen headers, autofit) for the export
-skins.ts    SKINS registry: clean | terminal | soft (label, blurb, swatch)
+skins.ts    SKINS registry: clean | terminal | soft | press (label, blurb, swatch)
+            plus SKIN_IDS, which sanitizeSettings validates against — never
+            re-list the ids anywhere else
 ids.ts      uid(), nowIso()
 media.ts    pickMedia(image|audio) (native dialog in Tauri, <input type=file> in browser),
             shrinkImage (canvas, longest side 1920 for 1080p / 2560 for 2K, JPEG), data: URL helpers, size limits

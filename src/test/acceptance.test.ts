@@ -9,6 +9,8 @@ import { parseCsv, nodesCsv, parseNodesCsv } from "../lib/csv";
 import { buildWorkbook } from "../lib/xlsx";
 import * as XLSX from "xlsx";
 import { weekKey } from "../lib/time";
+import { SKINS } from "../lib/skins";
+import { DEFAULT_SETTINGS } from "../types";
 
 let db: SqlJsDriver;
 beforeEach(async () => {
@@ -889,5 +891,26 @@ describe("upgrading a real database", () => {
     expect(node.planned_start).toBeNull();
     // The old row still counts as evidence of work, and as a timed block.
     expect(sessionStats([session]).timedCount).toBe(1);
+  });
+});
+
+describe("skins", () => {
+  it("every skin in the registry survives a save round trip", () => {
+    // The allow-list used to be a second copy of the ids, so a skin added to the
+    // registry was accepted by the picker and silently reverted on the next load.
+    for (const skin of SKINS) {
+      expect(sanitizeSettings({ skin: skin.id }).skin).toBe(skin.id);
+    }
+    expect(sanitizeSettings({ skin: "not-a-skin" }).skin).toBe(DEFAULT_SETTINGS.skin);
+  });
+
+  it("each skin defines the tokens the picker swatch needs", () => {
+    for (const s of SKINS) {
+      expect(s.swatch).toHaveLength(4);
+      for (const c of s.swatch) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(s.label.length).toBeGreaterThan(0);
+      expect(s.blurb.length).toBeGreaterThan(0);
+    }
+    expect(new Set(SKINS.map((s) => s.id)).size).toBe(SKINS.length);
   });
 });
