@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SqlJsDriver } from "../db/sqljs";
 import { migrate, CURRENT_SCHEMA_VERSION, MIGRATIONS } from "../db/migrations";
-import { createNode, setPct, listPctHistory, insertSession, listSessions, listNodes, deleteNode, snapshotSubtree, restoreSubtree, moveNode, updateNode, duplicateNode, addChecklistItem, updateChecklistItem, deleteChecklistItem, syncChecklistPct, listChecklist, assignSessions, loadSettings, saveSetting, sanitizeSettings, setStatus, listStatusHistory } from "../db/repo";
+import { createNode, setPct, listPctHistory, insertSession, listSessions, listNodes, deleteNode, snapshotSubtree, restoreSubtree, moveNode, updateNode, duplicateNode, addChecklistItem, updateChecklistItem, deleteChecklistItem, syncChecklistPct, listChecklist, assignSessions, loadSettings, saveSetting, sanitizeSettings, setStatus, listStatusHistory, tzOffsetNow } from "../db/repo";
 import { computeRollup, rootTotals } from "../lib/rollup";
 import { weeklySummary, thisWeekBySubject, hoursBySubjectForWeek, sessionStats, plannedVsActual, velocity, agingWip, estimateBias, reworkRate, quantile, IDLE_DAYS } from "../lib/stats";
 import { uid } from "../lib/ids";
@@ -664,7 +664,7 @@ describe("session provenance", () => {
     await insertSession(db, session());
     const [row] = await listSessions(db);
     expect(row.source).toBe("unknown");
-    expect(row.tz_offset).toBe(-new Date().getTimezoneOffset());
+    expect(row.tz_offset).toBe(tzOffsetNow());
   });
 
   it("keeps the source it was given and round-trips it through the database", async () => {

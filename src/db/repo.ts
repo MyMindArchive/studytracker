@@ -436,9 +436,15 @@ function sessionValues(s: Session): unknown[] {
   return [s.id, s.node_id, s.cycle_id, s.mode, s.planned_seconds, s.actual_seconds, s.started_at, s.ended_at, s.ended_reason, s.note, s.source, s.tz_offset];
 }
 
-/** Minutes east of UTC right now (the sign people expect: Berlin in summer = +120). */
+/**
+ * Minutes east of UTC right now (the sign people expect: Berlin in summer = +120).
+ *
+ * The `|| 0` is not redundant: at UTC the negation produces `-0`, which SQLite
+ * stores and returns as `0`, and `Object.is(-0, 0)` is false — so the value in
+ * memory would not compare equal to the same value read back.
+ */
 export function tzOffsetNow(d = new Date()): number {
-  return -d.getTimezoneOffset();
+  return -d.getTimezoneOffset() || 0;
 }
 
 export type SessionInput = Omit<Session, "id" | "source" | "tz_offset"> & {
