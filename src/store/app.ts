@@ -3,7 +3,7 @@ import type { SqlDriver } from "../db/driver";
 import { defaultStoragePath, openDatabase, rememberStoragePath, savedStoragePath } from "../db";
 import { SqlJsDriver } from "../db/sqljs";
 import * as repo from "../db/repo";
-import type { ChecklistItem, DbNode, PctHistory, Session, Settings, SkinId } from "../types";
+import type { ChecklistItem, DbNode, NodeStatus, PctHistory, Session, Settings, SkinId, StatusHistory } from "../types";
 import { DEFAULT_SETTINGS, SUBJECT_COLORS } from "../types";
 import { SKINS } from "../lib/skins";
 import { computeRollup, rootTotals, type NodeRollup, type RootTotals } from "../lib/rollup";
@@ -47,6 +47,7 @@ interface AppState {
   nodes: DbNode[];
   sessions: Session[];
   history: PctHistory[];
+  statusHistory: StatusHistory[];
   checklist: ChecklistItem[];
   /** done / total per node, for nodes that have a checklist */
   checklistStats: Map<string, { done: number; total: number }>;
@@ -85,6 +86,8 @@ interface AppState {
   renameNode(id: string, name: string): Promise<void>;
   patchNode(id: string, patch: repo.NodePatch): Promise<void>;
   setPct(id: string, pct: number): Promise<void>;
+  /** flag a task as waiting on something, or clear the flag */
+  setNodeStatus(id: string, status: NodeStatus | null, note?: string | null): Promise<void>;
   deleteNode(id: string): Promise<void>;
   duplicateNode(id: string): Promise<void>;
   moveNode(id: string, parentId: string | null, index: number): Promise<void>;
@@ -96,9 +99,9 @@ interface AppState {
   deleteChecklistItem(id: string): Promise<void>;
 
   // sessions
-  logSession(s: Omit<Session, "id">): Promise<Session>;
+  logSession(s: repo.SessionInput): Promise<Session>;
   /** Backfill several sessions at once (time worked before or outside the timer). */
-  logSessions(list: Omit<Session, "id">[]): Promise<Session[]>;
+  logSessions(list: repo.SessionInput[]): Promise<Session[]>;
   assignSessions(ids: string[], nodeId: string | null): Promise<void>;
   updateSessionNote(id: string, note: string | null): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -129,11 +132,11 @@ export const useApp = create<AppState>((set, get) => {
 
   const afterWrite = async () => {
     await get().reload();
-    const { settings, dbPath, nodes, sessions, history, checklist } = get();
+    const { settings, dbPath, nodes, sessions, history, checklist, statusHistory } = get();
     if (settings.csv_mirror && isTauri() && dbPath) {
       if (mirrorTimer) clearTimeout(mirrorTimer);
       mirrorTimer = setTimeout(() => {
-        writeMirror(dirname(dbPath), { nodes, sessions, history, checklist, rollupMode: settings.rollup_mode }).catch((e) => console.error("csv mirror failed", e));
+        writeMirror(dirname(dbPath), { nodes, sessions, history, checklist, statusHistory, rollupMode: settings.rollup_mode }).catch((e) => console.error("csv mirror failed", e));
       }, 300);
     }
   };
@@ -152,6 +155,7 @@ export const useApp = create<AppState>((set, get) => {
     nodes: [],
     sessions: [],
     history: [],
+    statusHistory: [],
     checklist: [],
     checklistStats: new Map(),
     settings: DEFAULT_SETTINGS,
@@ -218,12 +222,13 @@ export const useApp = create<AppState>((set, get) => {
 
     async reload() {
       const db = requireDb();
-      const [nodes, sessions, history, settings, checklist] = await Promise.all([
+      const [nodes, sessions, history, settings, checklist, statusHistory] = await Promise.all([
         repo.listNodes(db),
         repo.listSessions(db),
         repo.listPctHistory(db),
         repo.loadSettings(db),
         repo.listChecklist(db),
+        repo.listStatusHistory(db),
       ]);
       const rollup = computeRollup(nodes, settings.rollup_mode);
       const checklistStats = new Map<string, { done: number; total: number }>();
@@ -233,7 +238,7 @@ export const useApp = create<AppState>((set, get) => {
         if (it.done) s.done++;
         checklistStats.set(it.node_id, s);
       }
-      set({ nodes, sessions, history, checklist, checklistStats, settings, rollup, root: rootTotals(nodes, rollup) });
+      set({ nodes, sessions, history, statusHistory, checklist, checklistStats, settings, rollup, root: rootTotals(nodes, rollup) });
       applyTheme(settings.theme, settings.skin);
     },
 
@@ -302,6 +307,21 @@ export const useApp = create<AppState>((set, get) => {
         label: "percent change",
         run: async () => {
           await repo.setPct(db, id, before);
+          await afterWrite();
+        },
+      });
+      await afterWrite();
+    },
+
+    async setNodeStatus(id, status, note = null) {
+      const db = requireDb();
+      const before = get().nodes.find((n) => n.id === id)?.status ?? null;
+      if (before === status) return;
+      await repo.setStatus(db, id, status, note);
+      pushUndo({
+        label: status === "blocked" ? "blocked" : "unblocked",
+        run: async () => {
+          await repo.setStatus(db, id, before);
           await afterWrite();
         },
       });
@@ -447,8 +467,8 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     async exportXlsx() {
-      const { nodes, sessions, history, settings, checklist } = get();
-      const wb = buildWorkbook(nodes, sessions, history, weeklySummary(nodes, sessions, history, new Date(), settings.rollup_mode), checklist);
+      const { nodes, sessions, history, settings, checklist, statusHistory } = get();
+      const wb = buildWorkbook(nodes, sessions, history, weeklySummary(nodes, sessions, history, new Date(), settings.rollup_mode), checklist, statusHistory);
       const bytes = workbookBytes(wb);
       const name = `studytracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
       return saveBytes(name, bytes, "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -502,6 +522,10 @@ export const useApp = create<AppState>((set, get) => {
               sets.push("deadline = ?");
               vals.push(r.deadline);
             }
+            if (r.planned_start !== null) {
+              sets.push("planned_start = ?");
+              vals.push(r.planned_start);
+            }
             if (r.weight !== null) {
               sets.push("weight = ?");
               vals.push(r.weight);
@@ -540,6 +564,8 @@ export const useApp = create<AppState>((set, get) => {
                 est_effort: r.est_effort,
                 pct_complete: r.pct_complete ?? 0,
                 deadline: r.deadline,
+                planned_start: r.planned_start,
+                status: null,
                 created_at: ts,
                 updated_at: ts,
                 weight: r.weight ?? 1,

@@ -129,6 +129,17 @@ export function TreeView() {
     return out;
   }, [kids, expanded, subjectFilter, treeSort, rollup, deadlines, todayMs]);
 
+  /**
+   * Weight only means something to a child whose parent rolls up by weight, so
+   * the column exists only when some node in the tree is actually in that case.
+   * Read across every node rather than the visible rows, or collapsing a group
+   * would make the column disappear and come back.
+   */
+  const showWeight = useMemo(
+    () => nodes.some((n) => n.parent_id !== null && rollup.get(n.parent_id)?.mode === "weight"),
+    [nodes, rollup],
+  );
+
   const totalHours = useMemo(() => creditedSessions(sessions).reduce((a, s) => a + s.actual_seconds, 0) / 3600, [sessions]);
 
   // Keep selection valid
@@ -182,14 +193,15 @@ export function TreeView() {
   };
 
   const gridStyle = useMemo<CSSProperties>(() => {
-    const fixed = PROGRESS_MIN + cols.pct + cols.est + cols.weight + cols.due;
-    const gaps = 5 * 12; // column-gap 0.75rem between six columns
+    const weightCol = showWeight ? `${cols.weight}px ` : "";
+    const fixed = PROGRESS_MIN + cols.pct + cols.est + (showWeight ? cols.weight : 0) + cols.due;
+    const gaps = (showWeight ? 5 : 4) * 12; // column-gap 0.75rem between the columns
     return {
       // Progress keeps its own flexible width (like before); the numeric columns are resizable
-      "--tree-cols": `minmax(${NAME_MIN}px,1fr) minmax(${PROGRESS_MIN}px,${PROGRESS_MAX}px) ${cols.pct}px ${cols.est}px ${cols.weight}px ${cols.due}px`,
+      "--tree-cols": `minmax(${NAME_MIN}px,1fr) minmax(${PROGRESS_MIN}px,${PROGRESS_MAX}px) ${cols.pct}px ${cols.est}px ${weightCol}${cols.due}px`,
       "--tree-min-w": `${NAME_MIN + fixed + gaps + 32}px`,
     } as CSSProperties;
-  }, [cols]);
+  }, [cols, showWeight]);
 
   // plain render helper (not a component) so header cells keep their identity across renders
   const resizer = (col: ColKey) => (
@@ -285,10 +297,12 @@ export function TreeView() {
                   Est. effort
                   {resizer("est")}
                 </span>
-                <span className="relative text-right" title="Share among siblings, used by the custom-weights roll-up">
-                  Weight
-                  {resizer("weight")}
-                </span>
+                {showWeight && (
+                  <span className="relative text-right" title="Share among siblings, used by the custom-weights roll-up">
+                    Weight
+                    {resizer("weight")}
+                  </span>
+                )}
                 <span className="relative text-right" title="Own deadline, or the earliest deadline among the tasks below (shown in italics)">
                   Due
                   {resizer("due")}
@@ -307,6 +321,7 @@ export function TreeView() {
                   due={deadlines.get(r.node.id) as EffectiveDeadline | undefined}
                   today={todayMs}
                   manual={manual}
+                  showWeight={showWeight}
                   onDelete={requestDelete}
                 />
               ))}

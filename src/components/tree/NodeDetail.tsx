@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Play, Trash2, Plus, CheckSquare, CalendarPlus } from "lucide-react";
+import { Play, Trash2, Plus, CheckSquare, CalendarPlus, PauseOctagon } from "lucide-react";
 import { addWeeks } from "date-fns";
 import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
@@ -17,6 +17,13 @@ import { cn } from "../../lib/cn";
 
 const UNITS = ["hours", "pages", "problems", "chapters"];
 
+const SOURCE_HINT: Record<string, string> = {
+  manual: "Logged by hand after the fact — the hours are real, the clock time is whatever was typed.",
+  imported: "Came in from a file.",
+  unknown: "Written before StudyTracker recorded where a session came from.",
+  timer: "Recorded by the countdown.",
+};
+
 export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
   const id = useApp((s) => s.selectedNodeId);
   const nodes = useApp((s) => s.nodes);
@@ -25,6 +32,8 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
   const rollup = useApp((s) => s.rollup);
   const patchNode = useApp((s) => s.patchNode);
   const setPct = useApp((s) => s.setPct);
+  const setNodeStatus = useApp((s) => s.setNodeStatus);
+  const statusHistory = useApp((s) => s.statusHistory);
   const addChild = useApp((s) => s.addChild);
   const updateSessionNote = useApp((s) => s.updateSessionNote);
   const deleteSession = useApp((s) => s.deleteSession);
@@ -36,6 +45,7 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
   const deleteChecklistItem = useApp((s) => s.deleteChecklistItem);
   const [itemDraft, setItemDraft] = useState("");
   const [logOpen, setLogOpen] = useState(false);
+  const [blockReason, setBlockReason] = useState("");
 
   const settingsMode = useApp((s) => s.settings.rollup_mode);
   const children = useMemo(() => (id ? childrenOf(nodes).get(id) ?? [] : []), [nodes, id]);
@@ -52,6 +62,8 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
   /** rule the parent uses to combine this node with its siblings */
   const parentMode: RollupMode = (node?.parent_id ? rollup.get(node.parent_id)?.mode : undefined) ?? settingsMode;
 
+  /** whether this node's own children are combined by weight — nothing weight-related is shown otherwise */
+  const byWeight = roll?.mode === "weight";
   const subject = node ? subjectIndex(nodes).get(node.id) : undefined;
   const isSubject = node?.parent_id === null;
   const isLeaf = roll?.isLeaf ?? false;
@@ -101,6 +113,10 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
 
   const totalSeconds = creditedSessions(nodeSessions).reduce((a, s) => a + s.actual_seconds, 0);
   const color = subject?.color ?? null;
+  // The transition that put this node into its current status, for "blocked since".
+  const lastStatusChange = statusHistory.filter((h) => h.node_id === node.id).sort((a, b) => a.changed_at.localeCompare(b.changed_at)).at(-1);
+  const blockedSince = node.status === "blocked" && lastStatusChange ? fromIso(lastStatusChange.changed_at) : null;
+  const blockedNote = node.status === "blocked" ? lastStatusChange?.note ?? null : null;
 
   const startTimer = () => {
     useTimer.getState().setNode(node.id);
@@ -124,7 +140,7 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
           />
         </div>
         <div className="mt-2 flex items-center gap-3 text-xs text-muted">
-          <StatusPill status={roll.status} />
+          <StatusPill status={node.status === "blocked" ? "Blocked" : roll.status} />
           <span>{isSubject ? "Project" : isLeaf ? "Task" : "Group"}</span>
           <span>· {roll.leafCount} leaf task{roll.leafCount === 1 ? "" : "s"}</span>
         </div>
@@ -167,8 +183,11 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
         <Field label="Deadline" hint="shown in the Due column and used for sorting">
           <input type="date" className="input w-full" value={node.deadline ?? ""} onChange={(e) => patchNode(node.id, { deadline: e.target.value || null })} />
         </Field>
-        {!isSubject && (
-          <Field label="Weight" hint={parentMode === "weight" ? "share among siblings" : "only used when the parent rolls up by weight"}>
+        <Field label="Planned start" hint="flags it on the dashboard if the day passes at 0 %">
+          <input type="date" className="input w-full" value={node.planned_start ?? ""} onChange={(e) => patchNode(node.id, { planned_start: e.target.value || null })} />
+        </Field>
+        {!isSubject && parentMode === "weight" && (
+          <Field label="Weight" hint="share among siblings">
             <NumberInput value={node.weight ?? 1} min={0} step={0.5} className="input w-full" onChange={(v) => patchNode(node.id, { weight: Math.max(0, v ?? 1) })} />
           </Field>
         )}
@@ -291,38 +310,87 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
             <span className="section-title">Children</span>
             <span className="text-xs text-muted">{ROLLUP_LABEL[roll.mode]}</span>
           </div>
-          <div className="table-head grid grid-cols-[1fr_52px_64px] gap-2 pb-1">
+          <div className={cn("table-head grid gap-2 pb-1", byWeight ? "grid-cols-[1fr_52px_64px]" : "grid-cols-[1fr_52px]")}>
             <span>Task</span>
             <span className="text-right">%</span>
-            <span className="text-right">Weight</span>
+            {byWeight && <span className="text-right">Weight</span>}
           </div>
           <ul className="flex flex-col gap-1">
             {children.map((c) => {
               const cr = rollup.get(c.id);
               return (
-                <li key={c.id} className="grid grid-cols-[1fr_52px_64px] items-center gap-2 text-sm">
+                <li key={c.id} className={cn("grid items-center gap-2 text-sm", byWeight ? "grid-cols-[1fr_52px_64px]" : "grid-cols-[1fr_52px]")}>
                   <button className="truncate text-left hover:underline" title={c.name} onClick={() => select(c.id)}>
                     {c.name}
                   </button>
                   <span className="text-right text-xs tabular-nums text-muted">{(cr?.pct ?? 0).toFixed(0)}%</span>
-                  <NumberInput
-                    value={c.weight ?? 1}
-                    min={0}
-                    step={0.5}
-                    className={cn("input w-full py-0.5 text-right", roll.mode !== "weight" && "opacity-50")}
-                    onChange={(v) => patchNode(c.id, { weight: Math.max(0, v ?? 1) })}
-                  />
+                  {byWeight && (
+                    <NumberInput
+                      value={c.weight ?? 1}
+                      min={0}
+                      step={0.5}
+                      className="input w-full py-0.5 text-right"
+                      onChange={(v) => patchNode(c.id, { weight: Math.max(0, v ?? 1) })}
+                    />
+                  )}
                 </li>
               );
             })}
           </ul>
           <p className="mt-2 text-xs text-muted">
-            {roll.mode === "weight"
+            {byWeight
               ? "A child with weight 2 counts twice; 0 leaves it out."
-              : `Weights are ignored while this ${isSubject ? "project" : "group"} rolls up by ${ROLLUP_LABEL[roll.mode].toLowerCase()}. Switch Roll-up to Custom weights to use them.`}
+              : `Every child counts the same. Switch Roll-up to ${ROLLUP_LABEL.weight} to give them individual shares.`}
           </p>
         </div>
       )}
+
+      <div className="card">
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="section-title">Waiting on something?</span>
+          {blockedSince && <span className="text-[10px] text-muted">since {blockedSince.toLocaleDateString()}</span>}
+        </div>
+        {node.status === "blocked" ? (
+          <div className="flex items-center gap-2">
+            <span className="pill text-warn">
+              <PauseOctagon size={11} className="mr-1 inline align-[-1px]" />
+              Blocked
+            </span>
+            {blockedNote && <span className="min-w-0 flex-1 truncate text-xs text-muted">{blockedNote}</span>}
+            <button className="btn btn-sm" onClick={() => setNodeStatus(node.id, null)}>
+              Unblock
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <input
+              className="input min-w-0 flex-1 text-xs"
+              placeholder="what is it waiting on? (optional)"
+              value={blockReason}
+              onChange={(e) => setBlockReason(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setNodeStatus(node.id, "blocked", blockReason.trim() || null);
+                  setBlockReason("");
+                }
+              }}
+            />
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                setNodeStatus(node.id, "blocked", blockReason.trim() || null);
+                setBlockReason("");
+              }}
+            >
+              <PauseOctagon size={12} /> Mark blocked
+            </button>
+          </div>
+        )}
+        <p className="mt-2 text-[10px] leading-4 text-muted">
+          Blocked work is waiting on something outside your hands — a book, a reply, a grade. It is kept apart from work that simply went quiet, and the time it
+          spends waiting is recorded so you can see it later.
+        </p>
+      </div>
 
       <div className="flex gap-2">
         <button className="btn btn-primary flex-1" onClick={startTimer}>
@@ -369,6 +437,11 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
                 <span className={cn("shrink-0 text-[10px]", s.ended_reason === "completed" ? "text-ok" : s.ended_reason === "aborted_credited" ? "text-warn" : "text-muted")}>
                   {s.ended_reason === "completed" ? "done" : s.ended_reason === "aborted_credited" ? "partial" : "discarded"}
                 </span>
+                {s.source !== "timer" && (
+                  <span className="shrink-0 text-[10px] text-muted" title={SOURCE_HINT[s.source]}>
+                    {s.source === "manual" ? "typed" : s.source === "imported" ? "imported" : "\u2014"}
+                  </span>
+                )}
                 {s.node_id !== node.id && <span className="truncate text-[10px] text-muted">{nodes.find((n) => n.id === s.node_id)?.name}</span>}
                 <input
                   className="input min-w-0 flex-1 py-0.5 text-xs"

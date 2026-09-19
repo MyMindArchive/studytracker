@@ -6,7 +6,7 @@ import { Modal } from "../ui/Modal";
 import { Field, NumberInput } from "../ui/Field";
 import { NodePicker } from "../ui/NodePicker";
 import { fmtHours } from "../../lib/time";
-import type { Session } from "../../types";
+import type { SessionInput } from "../../db/repo";
 import { cn } from "../../lib/cn";
 
 /** Longest backfill accepted in one go, so a mistyped year cannot write 40 000 rows. */
@@ -99,7 +99,7 @@ export function LogTimeDialog({
     try {
       const base = new Date(`${date}T${startTime || "09:00"}`);
       if (!isValid(base)) throw new Error("Pick a valid start time");
-      const list: Omit<Session, "id">[] = plan.perDay.map((secs, i) => {
+      const list: SessionInput[] = plan.perDay.map((secs, i) => {
         const started = addDays(base, i);
         return {
           node_id: target,
@@ -111,6 +111,9 @@ export function LogTimeDialog({
           ended_at: new Date(started.getTime() + secs * 1000).toISOString(),
           ended_reason: "completed",
           note: note.trim() || null,
+          // Typed in after the fact: the hours are real, the clock time is not,
+          // so the hour-of-day chart leaves these out while any timed blocks exist.
+          source: "manual",
         };
       });
       const written = await logSessions(list);
@@ -187,7 +190,7 @@ export function LogTimeDialog({
               }}
             />
           </Field>
-          <Field label="Starting at" hint="only affects the hour-of-day heatmap">
+          <Field label="Starting at" hint="ordering only — typed times stay out of the hour-of-day heatmap">
             <input type="time" className="input w-full" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
           </Field>
         </div>

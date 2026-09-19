@@ -81,6 +81,34 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_checklist_node ON checklist_items(node_id, sort_order)`,
     ],
   },
+  {
+    version: 4,
+    statements: [
+      // Where a session came from. Existing rows predate the column, so they
+      // get 'unknown' rather than a guess: the app has had manual logging for
+      // a while and there is no honest way to tell those rows apart now.
+      `ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'`,
+      // Minutes east of UTC at the moment it was recorded. Timestamps are
+      // stored UTC, but "which hour do I study best" is a local-time question,
+      // and reading it off the current zone re-dates all of history after a move.
+      `ALTER TABLE sessions ADD COLUMN tz_offset INTEGER NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)`,
+      // The day work was meant to start (deadline's counterpart).
+      `ALTER TABLE nodes ADD COLUMN planned_start TEXT NULL`,
+      // NULL = status is whatever the percent says; 'blocked' = waiting on
+      // something. Kept as an override rather than a parallel state machine so
+      // the percent stays the single source of truth for progress.
+      `ALTER TABLE nodes ADD COLUMN status TEXT NULL`,
+      `CREATE TABLE IF NOT EXISTS status_history (
+        id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        status TEXT NULL,
+        changed_at TEXT NOT NULL,
+        note TEXT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_status_history_node ON status_history(node_id, changed_at)`,
+    ],
+  },
 ];
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -96,7 +124,7 @@ async function assertKnownDatabase(db: SqlDriver, version: number): Promise<void
     // A foreign SQLite file with user_version 0 would silently get our tables
     // bolted on; refuse if it already has tables we do not know about.
     const tables = await db.select<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
-    const known = new Set(["nodes", "pct_history", "sessions", "settings", "checklist_items"]);
+    const known = new Set(["nodes", "pct_history", "sessions", "settings", "checklist_items", "status_history"]);
     const foreign = tables.map((t) => t.name).filter((n) => !known.has(n));
     if (foreign.length) throw new Error(`This file is not a StudyTracker database (contains tables: ${foreign.join(", ")}).`);
   }

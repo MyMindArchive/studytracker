@@ -9,6 +9,14 @@ export type Unit = "hours" | "pages" | "problems" | "chapters" | string;
 export type RollupMode = "equal" | "weight" | "effort";
 export const ROLLUP_MODES: RollupMode[] = ["equal", "weight", "effort"];
 
+/**
+ * An explicit state that the percent cannot express. Percent already says
+ * not-started / in-progress / done, so this only carries what it cannot:
+ * work that is waiting on something outside your control. NULL means "read it
+ * off the percent", which is what every node is until you say otherwise.
+ */
+export type NodeStatus = "blocked";
+
 export interface DbNode {
   id: string;
   parent_id: string | null;
@@ -18,6 +26,10 @@ export interface DbNode {
   est_effort: number | null;
   pct_complete: number;
   deadline: string | null;
+  /** the day work was meant to begin; drives the "should have started" flag */
+  planned_start: string | null;
+  /** null = derive from pct_complete; "blocked" = waiting on something */
+  status: NodeStatus | null;
   created_at: string;
   updated_at: string;
   /** share among siblings, used when the parent rolls up by weight */
@@ -34,6 +46,22 @@ export interface DbNode {
 export type SessionMode = "single" | "cycle";
 export type EndedReason = "completed" | "aborted_credited" | "aborted_discarded";
 
+/**
+ * Where a session came from. This is not bookkeeping for its own sake: a block
+ * you sat through and a block you typed in afterwards are worth different
+ * things. Only a timer block can be said to have run to the end, and only a
+ * timer block knows what hour of the day it really happened at.
+ *
+ *  timer     the countdown wrote it
+ *  manual    typed into Log time, for work already done
+ *  imported  came in from a file
+ *  unknown   written before the app recorded this (schema v3 and earlier)
+ */
+export type SessionSource = "timer" | "manual" | "imported" | "unknown";
+export const SESSION_SOURCES: SessionSource[] = ["timer", "manual", "imported", "unknown"];
+/** Sources whose start time is a real clock reading rather than something typed. */
+export const CLOCK_SOURCES: SessionSource[] = ["timer", "unknown"];
+
 export interface Session {
   id: string;
   node_id: string | null;
@@ -45,6 +73,9 @@ export interface Session {
   ended_at: string;
   ended_reason: EndedReason;
   note: string | null;
+  source: SessionSource;
+  /** minutes east of UTC when it was recorded; null for rows written before v4 */
+  tz_offset: number | null;
 }
 
 /** One tick box under a leaf task. Items count equally toward the task's percent. */
@@ -55,6 +86,16 @@ export interface ChecklistItem {
   done: boolean;
   sort_order: number;
   created_at: string;
+}
+
+/** One status transition. Blocked time is the gap between two of these rows. */
+export interface StatusHistory {
+  id: string;
+  node_id: string;
+  /** null = back to being read off the percent */
+  status: NodeStatus | null;
+  changed_at: string;
+  note: string | null;
 }
 
 export interface PctHistory {

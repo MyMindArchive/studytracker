@@ -24,6 +24,7 @@ export function TreeRow({
   due,
   today,
   manual,
+  showWeight,
   onDelete,
 }: {
   row: FlatRow;
@@ -34,6 +35,8 @@ export function TreeRow({
   today: number;
   /** true when the tree is in manual order; drag & drop is only allowed then */
   manual: boolean;
+  /** whether the tree is showing a Weight column at all (see TreeView) */
+  showWeight: boolean;
   onDelete: (n: DbNode) => void;
 }) {
   const { node, hasChildren, expanded } = row;
@@ -293,9 +296,20 @@ export function TreeRow({
             </span>
           </div>
 
+          {showWeight && (
           <div className="text-right tabular-nums">
-            {node.parent_id === null ? (
-              <span className="text-muted" title="Projects combine by estimated hours (or equally when units differ), not by weight">
+            {/* A number that changes nothing is worse than no number: it invites an
+                edit that silently does not land. Only a child of a weighted parent
+                gets an input; everything else in the column stays blank. */}
+            {parentMode !== "weight" ? (
+              <span
+                className="text-muted"
+                title={
+                  node.parent_id === null
+                    ? "Projects combine by estimated hours (or equally when units differ), not by weight"
+                    : `Not used: ${ROLLUP_LABEL[parentMode ?? "equal"].toLowerCase()} roll-up ignores weights`
+                }
+              >
                 –
               </span>
             ) : (
@@ -303,8 +317,8 @@ export function TreeRow({
                 type="number"
                 min={0}
                 step="any"
-                className={cn("input w-14 py-0.5 text-right", parentMode !== "weight" && "opacity-50")}
-                title={parentMode === "weight" ? "Weight among siblings" : `Not used: parent rolls up by ${ROLLUP_LABEL[parentMode ?? "equal"].toLowerCase()}`}
+                className="input w-14 py-0.5 text-right"
+                title="Weight among siblings"
                 defaultValue={node.weight ?? 1}
                 key={`${node.id}-w-${node.weight}`}
                 onBlur={(e) => commitWeight(e.target.value)}
@@ -319,6 +333,7 @@ export function TreeRow({
               />
             )}
           </div>
+          )}
 
           <div className="text-right">
             {due ? (

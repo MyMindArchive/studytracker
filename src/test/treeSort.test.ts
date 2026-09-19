@@ -14,6 +14,8 @@ function node(p: Partial<DbNode> & { id: string; name: string }): DbNode {
     est_effort: null,
     pct_complete: 0,
     deadline: null,
+    planned_start: null,
+    status: null,
     created_at: "2026-09-01T00:00:00.000Z",
     updated_at: "2026-09-01T00:00:00.000Z",
     weight: 1,

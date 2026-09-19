@@ -1,4 +1,4 @@
-import type { ChecklistItem, DbNode, PctHistory, RollupMode, Session } from "../types";
+import type { ChecklistItem, DbNode, PctHistory, RollupMode, Session, StatusHistory } from "../types";
 import { ROLLUP_MODES } from "../types";
 import type { WeeklySummaryRow } from "./stats";
 
@@ -24,6 +24,8 @@ export const NODE_COLUMNS: (keyof DbNode & string)[] = [
   "est_effort",
   "pct_complete",
   "deadline",
+  "planned_start",
+  "status",
   "created_at",
   "updated_at",
   "weight",
@@ -44,8 +46,11 @@ export const SESSION_COLUMNS: (keyof Session & string)[] = [
   "ended_at",
   "ended_reason",
   "note",
+  "source",
+  "tz_offset",
 ];
 export const PCT_COLUMNS: (keyof PctHistory & string)[] = ["id", "node_id", "pct", "changed_at"];
+export const STATUS_COLUMNS: (keyof StatusHistory & string)[] = ["id", "node_id", "status", "changed_at", "note"];
 export const CHECKLIST_COLUMNS: (keyof ChecklistItem & string)[] = ["id", "node_id", "label", "done", "sort_order", "created_at"];
 export const WEEKLY_COLUMNS: (keyof WeeklySummaryRow & string)[] = [
   "week_start",
@@ -65,6 +70,9 @@ export function sessionsCsv(sessions: Session[]): string {
 }
 export function pctHistoryCsv(h: PctHistory[]): string {
   return toCsv(h as unknown as Record<string, unknown>[], PCT_COLUMNS);
+}
+export function statusHistoryCsv(h: StatusHistory[]): string {
+  return toCsv(h as unknown as Record<string, unknown>[], STATUS_COLUMNS);
 }
 export function checklistCsv(items: ChecklistItem[]): string {
   return toCsv(items.map((i) => ({ ...i, done: i.done ? 1 : 0 })) as unknown as Record<string, unknown>[], CHECKLIST_COLUMNS);
@@ -140,6 +148,7 @@ export interface ImportedNodeRow {
   est_effort: number | null;
   pct_complete: number | null;
   deadline: string | null;
+  planned_start: string | null;
   weight: number | null;
   rollup_mode: RollupMode | null;
   unit: string | null;
@@ -169,6 +178,7 @@ export function parseNodesCsv(text: string): ImportedNodeRow[] {
     est_effort: num(get(r, "est_effort")),
     pct_complete: num(get(r, "pct_complete")),
     deadline: get(r, "deadline"),
+    planned_start: get(r, "planned_start"),
     weight: num(get(r, "weight")),
     rollup_mode: mode(get(r, "rollup_mode")),
     unit: get(r, "unit"),

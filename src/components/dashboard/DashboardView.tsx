@@ -2,8 +2,29 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Flame } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useApp } from "../../store/app";
-import { hoursToday, plannedVsActual, sessionStats, thisWeekBySubject, timeBySubject, velocity, PACE_WINDOW_WEEKS, MIN_PACE_DAYS, UNASSIGNED, type VelocityRow } from "../../lib/stats";
+import {
+  agingWip,
+  estimateBias,
+  hoursToday,
+  plannedVsActual,
+  reworkRate,
+  sessionStats,
+  thisWeekBySubject,
+  timeBySubject,
+  velocity,
+  IDLE_DAYS,
+  MIN_SUPPORT,
+  PACE_WINDOW_WEEKS,
+  MIN_PACE_DAYS,
+  UNASSIGNED,
+  type AgingFlag,
+  type AgingRow,
+  type BiasRow,
+  type SessionStats,
+  type VelocityRow,
+} from "../../lib/stats";
 import { fmtDuration, fmtHours } from "../../lib/time";
+import type { SessionSource } from "../../types";
 import { ProgressBar } from "../ui/ProgressBar";
 import { cn } from "../../lib/cn";
 
@@ -13,8 +34,11 @@ export function DashboardView() {
   const nodes = useApp((s) => s.nodes);
   const sessions = useApp((s) => s.sessions);
   const history = useApp((s) => s.history);
+  const statusHistory = useApp((s) => s.statusHistory);
   const rollup = useApp((s) => s.rollup);
   const dailyTarget = useApp((s) => s.settings.daily_target_hours);
+  const select = useApp((s) => s.select);
+  const setView = useApp((s) => s.setView);
   const [period, setPeriod] = useState<"day" | "week" | "month">("day");
   const [showLeaves, setShowLeaves] = useState(false);
 
@@ -25,6 +49,9 @@ export function DashboardView() {
   const pva = useMemo(() => plannedVsActual(nodes, sessions, rollup), [nodes, sessions, rollup]);
   const vel = useMemo(() => velocity(nodes, history, sessions, now), [nodes, history, sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   const stats = useMemo(() => sessionStats(sessions, now), [sessions]); // eslint-disable-line react-hooks/exhaustive-deps
+  const aging = useMemo(() => agingWip(nodes, history, sessions, statusHistory, now), [nodes, history, sessions, statusHistory]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bias = useMemo(() => estimateBias(nodes, sessions), [nodes, sessions]);
+  const rework = useMemo(() => reworkRate(nodes, history), [nodes, history]);
 
   const velocityRows = useMemo(() => {
     const weeks = vel[0]?.weekly.map((w) => w.week) ?? [];
@@ -39,6 +66,7 @@ export function DashboardView() {
     });
   }, [vel]);
 
+  const reworkTotal = rework[0];
   const subjectsPva = pva.filter((r) => r.level === "subject");
   const leavesBySubject = new Map<string, typeof pva>();
   for (const r of pva) if (r.level === "leaf") leavesBySubject.set(r.subjectId, [...(leavesBySubject.get(r.subjectId) ?? []), r]);
@@ -47,7 +75,7 @@ export function DashboardView() {
     <div className="h-full overflow-y-auto p-5">
       <div className="grid grid-cols-12 gap-4">
         {/* Today gauge */}
-        <section className="card col-span-4 flex flex-col">
+        <section className="card col-span-12 flex flex-col md:col-span-5 lg:col-span-4">
           <h2 className="section-title">Today</h2>
           <div className="flex flex-1 flex-col items-center justify-center py-2">
             <Gauge value={today} max={dailyTarget} />
@@ -63,7 +91,7 @@ export function DashboardView() {
         </section>
 
         {/* This week per project */}
-        <section className="card col-span-8">
+        <section className="card col-span-12 md:col-span-7 lg:col-span-8">
           <h2 className="section-title">This week per project</h2>
           {week.length === 0 ? (
             <Empty>Add projects with a weekly target to track them here.</Empty>
@@ -92,6 +120,59 @@ export function DashboardView() {
               })}
             </ul>
           )}
+        </section>
+
+        {/* Needs attention */}
+        <section className="card col-span-12">
+          <div className="flex items-baseline justify-between">
+            <h2 className="section-title">Needs attention</h2>
+            <span className="text-[10px] text-muted">open tasks measured against how long your finished ones took</span>
+          </div>
+          {aging.length === 0 ? (
+            <Empty>Nothing is overdue, blocked, running long or gone quiet.</Empty>
+          ) : (
+            <table className="mt-3 w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[34%]" />
+                <col className="w-[24%]" />
+                <col className="w-[9%]" />
+                <col className="w-[9%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
+                <col className="w-[6%]" />
+              </colgroup>
+              <thead className="table-head text-left text-[10px]">
+                <tr>
+                  <th className="py-1">Task</th>
+                  <th className="py-1">Why</th>
+                  <th className="py-1 text-right" title="Since the first logged hour or first percent above zero">
+                    Open
+                  </th>
+                  <th className="py-1 text-right" title={`Since the last logged hour or percent change; ${IDLE_DAYS} days counts as quiet`}>
+                    Quiet
+                  </th>
+                  <th className="py-1 text-right" title={`How long 85 % of comparable finished tasks took, once there are ${MIN_SUPPORT} of them`}>
+                    Typical
+                  </th>
+                  <th className="py-1 text-right">Logged</th>
+                  <th className="py-1 text-right">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {aging.slice(0, 12).map((r) => (
+                  <AgingRowView
+                    key={r.id}
+                    r={r}
+                    onOpen={() => {
+                      select(r.id);
+                      setView("tree");
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
+          {aging.length > 12 && <p className="mt-2 text-[10px] text-muted">{aging.length - 12} more not shown.</p>}
         </section>
 
         {/* Time by project */}
@@ -214,23 +295,233 @@ export function DashboardView() {
           )}
         </section>
 
+        {/* Estimates */}
+        <section className="card col-span-12">
+          <div className="flex items-baseline justify-between">
+            <h2 className="section-title">Estimates &amp; rework</h2>
+            <span className="text-[10px] text-muted">finished tasks only</span>
+          </div>
+          <div className="mt-3 grid grid-cols-12 gap-4">
+            <div className="col-span-12 lg:col-span-7">
+              <BiasTable rows={bias} />
+            </div>
+            <div className="col-span-12 lg:col-span-5">
+              <div className="grid grid-cols-2 gap-3">
+                <Tile label="Went backwards" value={`${reworkTotal.backwards}`} big />
+                <Tile label="Points given back" value={reworkTotal.pointsLost >= 1 ? reworkTotal.pointsLost.toFixed(0) : reworkTotal.pointsLost.toFixed(1)} big />
+              </div>
+              <p className="mt-2 text-[10px] leading-4 text-muted">
+                {reworkTotal.moves === 0
+                  ? "Rework shows up here once percentages start moving."
+                  : `${(reworkTotal.rate * 100).toFixed(0)} % of your percent changes were downward, across ${reworkTotal.tasks} task${
+                      reworkTotal.tasks === 1 ? "" : "s"
+                    }. A percent that drops means work was redone, called done too early, or re-scoped — pace only ever shows the net.`}
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Session stats */}
         <section className="card col-span-12">
-          <h2 className="section-title">Sessions</h2>
-          <div className="mt-3 grid grid-cols-4 gap-3">
+          <div className="flex items-baseline justify-between">
+            <h2 className="section-title">Sessions</h2>
+            <span className="text-[10px] text-muted">{sourceLine(stats.sources)}</span>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Tile label="Sessions" value={String(stats.count)} big />
-            <Tile label="Average length" value={fmtDuration(stats.avgSeconds)} big />
-            <Tile label="Completion rate" value={`${Math.round(stats.completionRate * 100)}%`} big />
+            <Tile label="Median length" value={fmtDuration(stats.medianSeconds)} big />
+            {stats.completionRate === null ? (
+              <Tile label="Days logged" value={String(stats.daysLogged)} big />
+            ) : (
+              <Tile label="Timer completion" value={`${Math.round(stats.completionRate * 100)}%`} big />
+            )}
             <Tile label="Study streak" value={`${stats.streakDays} day${stats.streakDays === 1 ? "" : "s"}`} big />
           </div>
           <div className="mt-4">
-            <div className="mb-1 text-xs text-muted">Hour-of-day heatmap (hours studied)</div>
+            <div className="mb-1 flex items-baseline justify-between text-xs text-muted">
+              <span>Hour-of-day heatmap (hours studied)</span>
+              <span className="text-[10px]">{HEATMAP_NOTE[stats.heatmapBasis]}</span>
+            </div>
             <Heatmap data={stats.heatmap} />
           </div>
+          <p className="mt-2 text-[10px] leading-4 text-muted">
+            Lengths are the median and the 85th percentile, not an average: one long Sunday would drag a mean somewhere no session ever was. Longest fifth of
+            your blocks run {fmtDuration(stats.p85Seconds)} or more.
+          </p>
         </section>
       </div>
     </div>
   );
+}
+
+/* ------------------------------------------------- needs attention */
+
+const FLAG_LABEL: Record<AgingFlag, string> = {
+  late: "overdue",
+  blocked: "blocked",
+  overrun: "running long",
+  idle: "quiet",
+  "not-started": "not started",
+};
+
+const FLAG_CLASS: Record<AgingFlag, string> = {
+  late: "text-danger",
+  blocked: "text-warn",
+  overrun: "text-warn",
+  idle: "text-muted",
+  "not-started": "text-muted",
+};
+
+const FLAG_WHY: Record<AgingFlag, string> = {
+  late: "Past its deadline and not finished.",
+  blocked: "Flagged as waiting on something. Clear the flag on the task when it frees up.",
+  overrun: "Open longer than 85 % of your comparable finished tasks took.",
+  idle: `Nothing logged and no percent moved for ${IDLE_DAYS} days or more.`,
+  "not-started": "Still at 0 % after the day it was meant to begin.",
+};
+
+/** "6 d", "3 wk", "4 mo" — the resolution the number actually has. */
+function fmtDays(d: number | null): string {
+  if (d === null) return "\u2013";
+  const n = Math.max(0, d);
+  if (n < 1) return "today";
+  if (n < 14) return `${Math.round(n)} d`;
+  if (n < 60) return `${Math.round(n / 7)} wk`;
+  return `${Math.round(n / 30.44)} mo`;
+}
+
+function AgingRowView({ r, onOpen }: { r: AgingRow; onOpen: () => void }) {
+  const why = [
+    ...r.flags.map((f) => FLAG_WHY[f]),
+    r.startedAt ? `First worked on ${r.startedAt.toLocaleDateString()}.` : "No hours logged and no percent above zero yet.",
+    r.typicalDays !== null
+      ? `Comparable finished tasks ${r.typicalFrom === "project" ? "in this project" : "across all projects"}: 85 % were done within ${fmtDays(r.typicalDays)}.`
+      : `Not enough finished tasks yet to say what is typical (needs ${MIN_SUPPORT}).`,
+    r.blockedDays !== null ? `Blocked for ${fmtDays(r.blockedDays)}.` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <tr className="border-t border-app align-middle" title={why}>
+      <td className="py-1.5 pr-3">
+        <button className="block w-full text-left" onClick={onOpen} title={`${r.subjectName} \u203a ${r.name}`}>
+          <span className="flex items-center gap-1.5">
+            <span className="dot h-2 w-2 shrink-0" style={{ background: r.color ?? "var(--accent)" }} />
+            <span className="truncate hover:underline">{r.name}</span>
+          </span>
+          <span className="block truncate pl-3.5 text-[10px] text-muted">{r.subjectName}</span>
+        </button>
+      </td>
+      <td className="py-1.5 pr-3">
+        <span className="flex flex-wrap gap-1">
+          {r.flags.map((f) => (
+            <span
+              key={f}
+              className={cn("tag", FLAG_CLASS[f])}
+              title={FLAG_WHY[f]}
+            >
+              {f === "late" || f === "blocked" ? <AlertTriangle size={9} className="mr-0.5 inline align-[-1px]" /> : null}
+              {FLAG_LABEL[f]}
+              {f === "blocked" && r.blockedDays !== null ? ` ${fmtDays(r.blockedDays)}` : ""}
+            </span>
+          ))}
+        </span>
+      </td>
+      <td className="py-1.5 text-right tabular-nums">{fmtDays(r.ageDays)}</td>
+      <td className={cn("py-1.5 text-right tabular-nums", (r.idleDays ?? 0) >= IDLE_DAYS && "text-warn")}>{fmtDays(r.idleDays)}</td>
+      <td className="py-1.5 text-right tabular-nums text-muted">
+        {r.typicalDays === null ? "\u2013" : fmtDays(r.typicalDays)}
+        {r.typicalFrom === "all" && r.typicalDays !== null && <span className="ml-0.5 text-[9px] opacity-70">all</span>}
+      </td>
+      <td className="py-1.5 text-right tabular-nums">{fmtHours(r.hoursLogged)}</td>
+      <td className="py-1.5 text-right tabular-nums">{r.pct.toFixed(0)}%</td>
+    </tr>
+  );
+}
+
+/* ----------------------------------------------------- estimate bias */
+
+/** "1.8x over", "0.7x under", "on the money". */
+function fmtRatio(ratio: number | null): { text: string; cls: string } {
+  if (ratio === null) return { text: "\u2013", cls: "text-muted" };
+  if (ratio >= 0.9 && ratio <= 1.1) return { text: `${ratio.toFixed(2)}\u00d7`, cls: "text-ok" };
+  return { text: `${ratio.toFixed(2)}\u00d7`, cls: ratio > 1 ? "text-warn" : "text-accent" };
+}
+
+function BiasTable({ rows }: { rows: BiasRow[] }) {
+  const pooled = rows[0];
+  if (!pooled || pooled.samples === 0) {
+    return <Empty>Finish a task that had an estimate and some logged hours, and the bias shows up here.</Empty>;
+  }
+  return (
+    <>
+      <p className="mb-2 text-xs text-muted">
+        Across {pooled.samples} finished task{pooled.samples === 1 ? "" : "s"} you log{" "}
+        <span className={cn("font-medium", fmtRatio(pooled.ratio).cls)}>{fmtRatio(pooled.ratio).text}</span> your estimate
+        {pooled.ratio !== null && pooled.ratio > 1.1 ? " — a four-hour estimate really costs " + fmtHours(4 * pooled.ratio) + "." : "."}
+      </p>
+      <table className="w-full text-xs">
+        <thead className="table-head text-left text-[10px]">
+          <tr>
+            <th className="py-1">Project</th>
+            <th className="py-1 text-right">Tasks</th>
+            <th className="py-1 text-right">Est.</th>
+            <th className="py-1 text-right">Actual</th>
+            <th className="py-1 text-right" title="Median of actual ÷ estimate, averaged in log space so 2x over and 2x under cancel out">
+              Ratio
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const f = fmtRatio(r.ratio);
+            return (
+              <tr
+                key={r.subjectId ?? "all"}
+                className={cn("border-t border-app", r.subjectId === null && "font-medium")}
+                title={
+                  r.fallback
+                    ? `Only ${r.samples} finished task${r.samples === 1 ? "" : "s"} here — fewer than ${MIN_SUPPORT}, so this borrows the pooled ratio instead of resting on too little.`
+                    : `${r.samples} finished task${r.samples === 1 ? "" : "s"} behind this ratio.`
+                }
+              >
+                <td className="max-w-0 truncate py-1">
+                  {r.color && <span className="dot mr-1.5 h-2 w-2" style={{ background: r.color }} />}
+                  {r.name}
+                </td>
+                <td className="py-1 text-right tabular-nums">{r.samples}</td>
+                <td className="py-1 text-right tabular-nums text-muted">{fmtHours(r.estHours)}</td>
+                <td className="py-1 text-right tabular-nums">{fmtHours(r.actualHours)}</td>
+                <td className={cn("py-1 text-right tabular-nums", f.cls)}>
+                  {f.text}
+                  {r.fallback && <span className="ml-0.5 text-[9px] opacity-70">pooled</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+/* ---------------------------------------------------------- sessions */
+
+const HEATMAP_NOTE: Record<SessionStats["heatmapBasis"], string> = {
+  timer: "timed blocks only",
+  entered: "start times as you typed them",
+  none: "",
+};
+
+/** "12 timed · 40 logged by hand" — what the numbers above are actually made of. */
+function sourceLine(sources: Record<SessionSource, number>): string {
+  const parts: string[] = [];
+  if (sources.timer) parts.push(`${sources.timer} timed`);
+  if (sources.manual) parts.push(`${sources.manual} logged by hand`);
+  if (sources.imported) parts.push(`${sources.imported} imported`);
+  if (sources.unknown) parts.push(`${sources.unknown} before this was recorded`);
+  return parts.join(" \u00b7 ");
 }
 
 /** Axis labels in the unit that keeps neighbouring ticks distinct: s, m or h. */

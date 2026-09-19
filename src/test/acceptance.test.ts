@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SqlJsDriver } from "../db/sqljs";
-import { migrate, CURRENT_SCHEMA_VERSION } from "../db/migrations";
-import { createNode, setPct, listPctHistory, insertSession, listSessions, listNodes, deleteNode, snapshotSubtree, restoreSubtree, moveNode, updateNode, duplicateNode, addChecklistItem, updateChecklistItem, deleteChecklistItem, syncChecklistPct, listChecklist, assignSessions, loadSettings, saveSetting, sanitizeSettings } from "../db/repo";
+import { migrate, CURRENT_SCHEMA_VERSION, MIGRATIONS } from "../db/migrations";
+import { createNode, setPct, listPctHistory, insertSession, listSessions, listNodes, deleteNode, snapshotSubtree, restoreSubtree, moveNode, updateNode, duplicateNode, addChecklistItem, updateChecklistItem, deleteChecklistItem, syncChecklistPct, listChecklist, assignSessions, loadSettings, saveSetting, sanitizeSettings, setStatus, listStatusHistory } from "../db/repo";
 import { computeRollup, rootTotals } from "../lib/rollup";
-import { weeklySummary, thisWeekBySubject, hoursBySubjectForWeek, sessionStats, plannedVsActual, velocity } from "../lib/stats";
+import { weeklySummary, thisWeekBySubject, hoursBySubjectForWeek, sessionStats, plannedVsActual, velocity, agingWip, estimateBias, reworkRate, quantile, IDLE_DAYS } from "../lib/stats";
 import { uid } from "../lib/ids";
 import { parseCsv, nodesCsv, parseNodesCsv } from "../lib/csv";
 import { buildWorkbook } from "../lib/xlsx";
@@ -121,13 +121,15 @@ describe("roll-up", () => {
     expect((await listChecklist(db)).filter((i) => i.node_id === ch.id).length).toBe(2);
   });
 
-  it("schema v3 adds weight, rollup_mode and checklist_items with sane defaults", async () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(3);
+  it("schema v4 adds weight, rollup_mode, checklist_items, status and planned_start with sane defaults", async () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(4);
     const s = await createNode(db, { parent_id: null, name: "S" });
     const [row] = await listNodes(db);
     expect(row.id).toBe(s.id);
     expect(row.weight).toBe(1);
     expect(row.rollup_mode).toBeNull();
+    expect(row.status).toBeNull();
+    expect(row.planned_start).toBeNull();
   });
 
   it("editing a leaf 20 -> 40 adds one pct_history row and changes the roll-up immediately", async () => {
@@ -510,9 +512,9 @@ describe("csv + xlsx", () => {
     expect(imported[1].rollup_mode).toBeNull();
   });
 
-  it("workbook has the four sheets with frozen headers", async () => {
+  it("workbook has every sheet with frozen headers", async () => {
     const wb = buildWorkbook([], [], [], []);
-    expect(wb.SheetNames).toEqual(["Nodes", "Sessions", "PctHistory", "WeeklySummary", "Checklist"]);
+    expect(wb.SheetNames).toEqual(["Nodes", "Sessions", "PctHistory", "WeeklySummary", "Checklist", "StatusHistory"]);
     const ws = wb.Sheets["WeeklySummary"];
     expect((ws["!freeze"] as { ySplit: number }).ySplit).toBe(1);
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
@@ -631,5 +633,261 @@ describe("database robustness", () => {
     expect(moved.unit).toBeNull();
     await moveNode(db, a.id, null, 0);
     expect((await listNodes(db)).find((n) => n.id === a.id)!.unit).toBe("hours");
+  });
+});
+
+/* ------------------------------------------------------------ v4: provenance */
+
+const DAY = 86_400_000;
+
+/** A session with everything filled in, so each test only states what it cares about. */
+function session(over: Partial<Parameters<typeof insertSession>[1]> = {}) {
+  const started = new Date();
+  return {
+    node_id: null,
+    cycle_id: null,
+    mode: "single" as const,
+    planned_seconds: 3600,
+    actual_seconds: 3600,
+    started_at: started.toISOString(),
+    ended_at: new Date(started.getTime() + 3600_000).toISOString(),
+    ended_reason: "completed" as const,
+    note: null,
+    ...over,
+  };
+}
+
+describe("session provenance", () => {
+  it("defaults to 'unknown' rather than claiming a session was timed", async () => {
+    await insertSession(db, session());
+    const [row] = await listSessions(db);
+    expect(row.source).toBe("unknown");
+    expect(row.tz_offset).toBe(-new Date().getTimezoneOffset());
+  });
+
+  it("keeps the source it was given and round-trips it through the database", async () => {
+    await insertSession(db, session({ source: "manual" }));
+    await insertSession(db, session({ source: "timer" }));
+    const rows = await listSessions(db);
+    expect(new Set(rows.map((r) => r.source))).toEqual(new Set(["manual", "timer"]));
+  });
+
+  it("completion rate ignores hand-logged entries, which are 100% by construction", async () => {
+    // Two timer blocks, one of them abandoned, plus a backfill that would otherwise read as perfect.
+    await insertSession(db, session({ source: "timer" }));
+    await insertSession(db, session({ source: "timer", ended_reason: "aborted_credited", actual_seconds: 600 }));
+    await insertSession(db, session({ source: "manual" }));
+    const st = sessionStats(await listSessions(db));
+    expect(st.completionRate).toBeCloseTo(0.5);
+    expect(st.timedCount).toBe(2);
+    expect(st.sources.manual).toBe(1);
+  });
+
+  it("withholds the completion rate entirely when nothing was ever timed", async () => {
+    await insertSession(db, session({ source: "manual" }));
+    await insertSession(db, session({ source: "manual" }));
+    const st = sessionStats(await listSessions(db));
+    expect(st.completionRate).toBeNull();
+    expect(st.daysLogged).toBe(1);
+  });
+
+  it("builds the heatmap from timed blocks, and says so when it has to fall back", async () => {
+    // 08:00 in a zone two hours east of UTC = 06:00 UTC.
+    await insertSession(db, session({ source: "timer", started_at: "2026-09-14T06:00:00.000Z", tz_offset: 120, actual_seconds: 3600 }));
+    await insertSession(db, session({ source: "manual", started_at: "2026-09-14T20:00:00.000Z", tz_offset: 120 }));
+    const st = sessionStats(await listSessions(db));
+    expect(st.heatmapBasis).toBe("timer");
+    // Monday 14 Sep 2026, hour 8 local — and nothing from the typed entry.
+    expect(st.heatmap[0][8]).toBeCloseTo(1);
+    expect(st.heatmap.flat().reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+
+    const manualOnly = sessionStats([(await listSessions(db)).find((r) => r.source === "manual")!]);
+    expect(manualOnly.heatmapBasis).toBe("entered");
+  });
+
+  it("reads the hour from the stored offset, not from where the machine is now", async () => {
+    const s = session({ source: "timer", started_at: "2026-09-14T23:30:00.000Z", tz_offset: 600, actual_seconds: 1800 });
+    // 23:30 UTC at +10 is 09:30 on Tuesday, not late Monday.
+    const st = sessionStats([{ ...s, id: "x", source: "timer", tz_offset: 600 }]);
+    expect(st.heatmap[1][9]).toBeCloseTo(0.5);
+  });
+});
+
+describe("status", () => {
+  it("records a blocked transition and refuses to write the same status twice", async () => {
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const t = await createNode(db, { parent_id: s.id, name: "T" });
+    expect(await setStatus(db, t.id, "blocked", "waiting on the textbook")).not.toBeNull();
+    expect(await setStatus(db, t.id, "blocked")).toBeNull();
+    expect(await setStatus(db, t.id, null)).not.toBeNull();
+    const rows = await listStatusHistory(db, t.id);
+    expect(rows.map((r) => r.status)).toEqual(["blocked", null]);
+    expect(rows[0].note).toBe("waiting on the textbook");
+    expect((await listNodes(db)).find((n) => n.id === t.id)!.status).toBeNull();
+  });
+
+  it("undo-delete brings the status history back with the subtree", async () => {
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const t = await createNode(db, { parent_id: s.id, name: "T" });
+    await setStatus(db, t.id, "blocked", "waiting");
+    const snap = await snapshotSubtree(db, s.id);
+    expect(snap.statusHistory).toHaveLength(1);
+    await deleteNode(db, s.id);
+    expect(await listStatusHistory(db)).toHaveLength(0);
+    await restoreSubtree(db, snap, {});
+    expect(await listStatusHistory(db)).toHaveLength(1);
+  });
+});
+
+describe("aging work", () => {
+  it("flags a quiet task and leaves a freshly touched one alone", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const stale = await createNode(db, { parent_id: s.id, name: "Stale" });
+    const fresh = await createNode(db, { parent_id: s.id, name: "Fresh" });
+    await setPct(db, stale.id, 30, new Date(now.getTime() - (IDLE_DAYS + 6) * DAY).toISOString());
+    await setPct(db, fresh.id, 30, new Date(now.getTime() - 2 * DAY).toISOString());
+    const rows = agingWip(await listNodes(db), await listPctHistory(db), [], [], now);
+    expect(rows.map((r) => r.name)).toEqual(["Stale"]);
+    expect(rows[0].flags).toContain("idle");
+    expect(rows[0].idleDays).toBeCloseTo(IDLE_DAYS + 6, 0);
+  });
+
+  it("counts hours logged after the fact as activity on the day the work happened", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const t = await createNode(db, { parent_id: s.id, name: "T" });
+    await setPct(db, t.id, 30, new Date(now.getTime() - 40 * DAY).toISOString());
+    // Without any hours it reads as quiet for forty days.
+    expect(agingWip(await listNodes(db), await listPctHistory(db), [], [], now)[0].flags).toContain("idle");
+    // Typed in today, but describing work done three days ago: still recent work.
+    await insertSession(db, session({ node_id: t.id, source: "manual", started_at: new Date(now.getTime() - 3 * DAY).toISOString() }));
+    const rows = agingWip(await listNodes(db), await listPctHistory(db), await listSessions(db), [], now);
+    expect(rows.find((r) => r.name === "T")).toBeUndefined();
+  });
+
+  it("separates blocked work from work that merely went quiet", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const t = await createNode(db, { parent_id: s.id, name: "T" });
+    await setPct(db, t.id, 40, new Date(now.getTime() - 30 * DAY).toISOString());
+    await setStatus(db, t.id, "blocked", "waiting on a reply", new Date(now.getTime() - 10 * DAY).toISOString());
+    const rows = agingWip(await listNodes(db), await listPctHistory(db), [], await listStatusHistory(db), now);
+    expect(rows[0].flags[0]).toBe("blocked");
+    expect(rows[0].blockedDays).toBeCloseTo(10, 0);
+  });
+
+  it("measures a task against the p85 of finished ones, and borrows the pool under minimum support", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    // Five finished tasks that each took about two days.
+    for (let i = 0; i < 5; i++) {
+      const d = await createNode(db, { parent_id: s.id, name: `done${i}` });
+      await setPct(db, d.id, 50, new Date(now.getTime() - (60 - i) * DAY).toISOString());
+      await setPct(db, d.id, 100, new Date(now.getTime() - (58 - i) * DAY).toISOString());
+    }
+    const open = await createNode(db, { parent_id: s.id, name: "Open" });
+    await setPct(db, open.id, 20, new Date(now.getTime() - 9 * DAY).toISOString());
+    const rows = agingWip(await listNodes(db), await listPctHistory(db), [], [], now);
+    const row = rows.find((r) => r.name === "Open")!;
+    expect(row.typicalFrom).toBe("project");
+    expect(row.typicalDays).toBeCloseTo(2, 1);
+    expect(row.flags).toContain("overrun");
+  });
+
+  it("flags a task that never started after the day it was meant to", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    await createNode(db, { parent_id: s.id, name: "Late start", planned_start: "2026-09-01" });
+    await createNode(db, { parent_id: s.id, name: "Future", planned_start: "2026-12-01" });
+    const rows = agingWip(await listNodes(db), await listPctHistory(db), [], [], now);
+    expect(rows.map((r) => r.name)).toEqual(["Late start"]);
+    expect(rows[0].flags).toEqual(["not-started"]);
+  });
+});
+
+describe("estimate bias and rework", () => {
+  it("reports actual over estimate as a log-median ratio, over finished tasks only", async () => {
+    const s = await createNode(db, { parent_id: null, name: "S", unit: "hours", hours_per_unit: 1 });
+    // Three finished tasks estimated at 1h that each took 2h, and one unfinished
+    // sink that would drag the ratio if it were counted.
+    for (let i = 0; i < 3; i++) {
+      const t = await createNode(db, { parent_id: s.id, name: `t${i}`, est_effort: 1 });
+      await setPct(db, t.id, 100);
+      await insertSession(db, session({ node_id: t.id, actual_seconds: 7200 }));
+    }
+    const open = await createNode(db, { parent_id: s.id, name: "open", est_effort: 10 });
+    await setPct(db, open.id, 10);
+    await insertSession(db, session({ node_id: open.id, actual_seconds: 3600 }));
+
+    const rows = estimateBias(await listNodes(db), await listSessions(db));
+    expect(rows[0].subjectId).toBeNull();
+    expect(rows[0].samples).toBe(3);
+    expect(rows[0].ratio).toBeCloseTo(2, 6);
+    // Under minimum support the project borrows the pooled ratio rather than publishing its own.
+    expect(rows[1].fallback).toBe(true);
+    expect(rows[1].ratio).toBeCloseTo(2, 6);
+  });
+
+  it("2x over and 2x under cancel out instead of averaging above 1", async () => {
+    const s = await createNode(db, { parent_id: null, name: "S", unit: "hours", hours_per_unit: 1 });
+    const over = await createNode(db, { parent_id: s.id, name: "over", est_effort: 1 });
+    const under = await createNode(db, { parent_id: s.id, name: "under", est_effort: 4 });
+    await setPct(db, over.id, 100);
+    await setPct(db, under.id, 100);
+    await insertSession(db, session({ node_id: over.id, actual_seconds: 7200 })); // 2x over
+    await insertSession(db, session({ node_id: under.id, actual_seconds: 7200 })); // 2x under
+    const rows = estimateBias(await listNodes(db), await listSessions(db));
+    expect(rows[0].ratio).toBeCloseTo(1, 6);
+  });
+
+  it("counts percentages that go backwards as rework", async () => {
+    const s = await createNode(db, { parent_id: null, name: "S" });
+    const t = await createNode(db, { parent_id: s.id, name: "T" });
+    await setPct(db, t.id, 40);
+    await setPct(db, t.id, 80);
+    await setPct(db, t.id, 50); // redone
+    const rows = reworkRate(await listNodes(db), await listPctHistory(db));
+    expect(rows[0].moves).toBe(3);
+    expect(rows[0].backwards).toBe(1);
+    expect(rows[0].pointsLost).toBeCloseTo(30);
+    expect(rows[0].tasks).toBe(1);
+    expect(rows[0].rate).toBeCloseTo(1 / 3);
+  });
+
+  it("quantile interpolates and survives an empty list", () => {
+    expect(quantile([], 0.5)).toBeNull();
+    expect(quantile([5], 0.85)).toBe(5);
+    expect(quantile([1, 2, 3, 4], 0.5)).toBeCloseTo(2.5);
+    expect(quantile([1, 2, 3, 4, 100], 0.5)).toBe(3); // the outlier does not move it
+  });
+});
+
+describe("upgrading a real database", () => {
+  it("v3 data survives the move to v4 and its sessions read as 'unknown'", async () => {
+    const old = await SqlJsDriver.openMemory();
+    // Build a v3 database the way the shipped app left it, then upgrade.
+    for (const m of MIGRATIONS.filter((x) => x.version <= 3)) {
+      for (const stmt of m.statements) await old.execute(stmt);
+      await old.execute(`PRAGMA user_version = ${m.version}`);
+    }
+    await old.execute(
+      `INSERT INTO nodes (id,parent_id,name,depth,sort_order,est_effort,pct_complete,deadline,created_at,updated_at,weight,rollup_mode,unit,hours_per_unit,weekly_target_hours,color)
+       VALUES ('n1',NULL,'Old project',0,0,NULL,40,NULL,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',1,NULL,'hours',1,NULL,NULL)`,
+    );
+    await old.execute(
+      `INSERT INTO sessions (id,node_id,cycle_id,mode,planned_seconds,actual_seconds,started_at,ended_at,ended_reason,note)
+       VALUES ('s1','n1',NULL,'single',1500,1500,'2026-01-02T09:00:00.000Z','2026-01-02T09:25:00.000Z','completed',NULL)`,
+    );
+
+    expect(await migrate(old)).toBe(CURRENT_SCHEMA_VERSION);
+    const [session] = await listSessions(old);
+    expect(session.source).toBe("unknown");
+    expect(session.tz_offset).toBeNull();
+    const [node] = await listNodes(old);
+    expect(node.status).toBeNull();
+    expect(node.planned_start).toBeNull();
+    // The old row still counts as evidence of work, and as a timed block.
+    expect(sessionStats([session]).timedCount).toBe(1);
   });
 });

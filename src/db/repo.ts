@@ -1,5 +1,5 @@
 import type { SqlDriver } from "./driver";
-import type { ChecklistItem, DbNode, MediaAsset, PctHistory, RollupMode, Session, Settings } from "../types";
+import type { ChecklistItem, DbNode, MediaAsset, NodeStatus, PctHistory, RollupMode, Session, SessionSource, Settings, StatusHistory } from "../types";
 import { DEFAULT_SETTINGS, ROLLUP_MODES } from "../types";
 import { uid, nowIso } from "../lib/ids";
 
@@ -10,6 +10,7 @@ export interface NewNodeInput {
   name: string;
   est_effort?: number | null;
   deadline?: string | null;
+  planned_start?: string | null;
   weight?: number;
   rollup_mode?: RollupMode | null;
   unit?: string | null;
@@ -29,6 +30,8 @@ export const NODE_INSERT_COLUMNS = [
   "est_effort",
   "pct_complete",
   "deadline",
+  "planned_start",
+  "status",
   "created_at",
   "updated_at",
   "weight",
@@ -84,6 +87,8 @@ export async function createNode(db: SqlDriver, input: NewNodeInput): Promise<Db
     est_effort: input.est_effort ?? null,
     pct_complete: 0,
     deadline: input.deadline ?? null,
+    planned_start: input.planned_start ?? null,
+    status: null,
     created_at: ts,
     updated_at: ts,
     weight: input.weight ?? 1,
@@ -105,7 +110,7 @@ export async function createNode(db: SqlDriver, input: NewNodeInput): Promise<Db
 export type NodePatch = Partial<
   Pick<
     DbNode,
-    "name" | "est_effort" | "deadline" | "weight" | "rollup_mode" | "unit" | "hours_per_unit" | "weekly_target_hours" | "color"
+    "name" | "est_effort" | "deadline" | "planned_start" | "weight" | "rollup_mode" | "unit" | "hours_per_unit" | "weekly_target_hours" | "color"
   >
 >;
 
@@ -140,6 +145,40 @@ export async function setPct(db: SqlDriver, id: string, pct: number, changedAt =
   return hist;
 }
 
+/**
+ * Flag a node as blocked (or clear the flag) and append a status_history row in
+ * the same transaction, so "how long was this waiting" stays answerable later.
+ * Re-setting the status it already has is a no-op rather than a second row.
+ */
+export async function setStatus(
+  db: SqlDriver,
+  id: string,
+  status: NodeStatus | null,
+  note: string | null = null,
+  changedAt = nowIso(),
+): Promise<StatusHistory | null> {
+  const cur = await getNode(db, id);
+  if (!cur || (cur.status ?? null) === status) return null;
+  const row: StatusHistory = { id: uid(), node_id: id, status, changed_at: changedAt, note };
+  await db.transaction(async (tx) => {
+    await tx.execute("UPDATE nodes SET status = ?, updated_at = ? WHERE id = ?", [status, changedAt, id]);
+    await tx.execute("INSERT INTO status_history (id,node_id,status,changed_at,note) VALUES (?,?,?,?,?)", [
+      row.id,
+      row.node_id,
+      row.status,
+      row.changed_at,
+      row.note,
+    ]);
+  });
+  return row;
+}
+
+export async function listStatusHistory(db: SqlDriver, nodeId?: string): Promise<StatusHistory[]> {
+  return nodeId
+    ? db.select<StatusHistory>("SELECT * FROM status_history WHERE node_id = ? ORDER BY changed_at", [nodeId])
+    : db.select<StatusHistory>("SELECT * FROM status_history ORDER BY changed_at");
+}
+
 /** Delete a node and its whole subtree explicitly (no reliance on FK pragmas). */
 export async function deleteNode(db: SqlDriver, id: string): Promise<void> {
   const snap = await snapshotSubtree(db, id);
@@ -149,6 +188,7 @@ export async function deleteNode(db: SqlDriver, id: string): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(`UPDATE sessions SET node_id = NULL WHERE node_id IN (${q})`, ids);
     await tx.execute(`DELETE FROM pct_history WHERE node_id IN (${q})`, ids);
+    await tx.execute(`DELETE FROM status_history WHERE node_id IN (${q})`, ids);
     await tx.execute(`DELETE FROM checklist_items WHERE node_id IN (${q})`, ids);
     // children first so the FK never dangles even with cascades disabled
     for (const n of [...snap.nodes].sort((a, b) => b.depth - a.depth)) {
@@ -161,6 +201,7 @@ export async function deleteNode(db: SqlDriver, id: string): Promise<void> {
 export interface NodeSnapshot {
   nodes: DbNode[];
   pctHistory: PctHistory[];
+  statusHistory: StatusHistory[];
   checklist: ChecklistItem[];
   sessionIds: string[];
 }
@@ -187,8 +228,9 @@ export async function snapshotSubtree(db: SqlDriver, rootId: string): Promise<No
   const sessions = list.length
     ? await db.select<{ id: string }>(`SELECT id FROM sessions WHERE node_id IN (${q})`, list)
     : [];
+  const statusHistory = list.length ? await db.select<StatusHistory>(`SELECT * FROM status_history WHERE node_id IN (${q})`, list) : [];
   const checklist = list.length ? (await db.select<ChecklistItem>(`SELECT * FROM checklist_items WHERE node_id IN (${q})`, list)).map(normaliseItem) : [];
-  return { nodes, pctHistory, checklist, sessionIds: sessions.map((s) => s.id) };
+  return { nodes, pctHistory, statusHistory, checklist, sessionIds: sessions.map((s) => s.id) };
 }
 
 export async function restoreSubtree(db: SqlDriver, snap: NodeSnapshot, sessionNodeMap: Record<string, string>): Promise<void> {
@@ -203,6 +245,15 @@ export async function restoreSubtree(db: SqlDriver, snap: NodeSnapshot, sessionN
         h.node_id,
         h.pct,
         h.changed_at,
+      ]);
+    }
+    for (const h of snap.statusHistory ?? []) {
+      await tx.execute("INSERT OR REPLACE INTO status_history (id,node_id,status,changed_at,note) VALUES (?,?,?,?,?)", [
+        h.id,
+        h.node_id,
+        h.status,
+        h.changed_at,
+        h.note,
       ]);
     }
     for (const it of snap.checklist ?? []) {
@@ -376,53 +427,58 @@ export async function listSessions(db: SqlDriver): Promise<Session[]> {
   return db.select<Session>("SELECT * FROM sessions ORDER BY started_at DESC");
 }
 
-export async function insertSession(db: SqlDriver, s: Omit<Session, "id"> & { id?: string }): Promise<Session> {
-  const full: Session = { ...s, id: s.id ?? uid() };
+/** Column order shared by both session inserts. */
+const SESSION_INSERT_SQL = `INSERT INTO sessions (id,node_id,cycle_id,mode,planned_seconds,actual_seconds,started_at,ended_at,ended_reason,note,source,tz_offset)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`;
+
+function sessionValues(s: Session): unknown[] {
+  return [s.id, s.node_id, s.cycle_id, s.mode, s.planned_seconds, s.actual_seconds, s.started_at, s.ended_at, s.ended_reason, s.note, s.source, s.tz_offset];
+}
+
+/** Minutes east of UTC right now (the sign people expect: Berlin in summer = +120). */
+export function tzOffsetNow(d = new Date()): number {
+  return -d.getTimezoneOffset();
+}
+
+export type SessionInput = Omit<Session, "id" | "source" | "tz_offset"> & {
+  id?: string;
+  source?: SessionSource;
+  tz_offset?: number | null;
+};
+
+/** Fill in the fields every session needs and clamp the numbers. */
+function normaliseSession(s: SessionInput): Session {
+  return {
+    ...s,
+    id: s.id ?? uid(),
+    // An unlabelled row is an import in all but name, so it is never called a
+    // timer block: nothing downstream should treat it as a countdown that ran.
+    source: s.source ?? "unknown",
+    tz_offset: s.tz_offset ?? tzOffsetNow(),
+    planned_seconds: Math.max(0, Math.round(Number(s.planned_seconds) || 0)),
+    actual_seconds: Math.max(0, Math.round(Number(s.actual_seconds) || 0)),
+  };
+}
+
+export async function insertSession(db: SqlDriver, s: SessionInput): Promise<Session> {
+  const full = normaliseSession(s);
   // The task may have been deleted while the countdown ran; the session must
   // still be saved (it lands in the inbox) rather than fail the FK constraint.
   if (full.node_id && !(await getNode(db, full.node_id))) full.node_id = null;
-  full.planned_seconds = Math.max(0, Math.round(Number(full.planned_seconds) || 0));
-  full.actual_seconds = Math.max(0, Math.round(Number(full.actual_seconds) || 0));
-  await db.execute(
-    `INSERT INTO sessions (id,node_id,cycle_id,mode,planned_seconds,actual_seconds,started_at,ended_at,ended_reason,note)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [
-      full.id,
-      full.node_id,
-      full.cycle_id,
-      full.mode,
-      full.planned_seconds,
-      full.actual_seconds,
-      full.started_at,
-      full.ended_at,
-      full.ended_reason,
-      full.note,
-    ],
-  );
+  await db.execute(SESSION_INSERT_SQL, sessionValues(full));
   return full;
-}
-
-/** Column order shared by both session inserts. */
-const SESSION_INSERT_SQL = `INSERT INTO sessions (id,node_id,cycle_id,mode,planned_seconds,actual_seconds,started_at,ended_at,ended_reason,note)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`;
-
-function sessionValues(s: Session): unknown[] {
-  return [s.id, s.node_id, s.cycle_id, s.mode, s.planned_seconds, s.actual_seconds, s.started_at, s.ended_at, s.ended_reason, s.note];
 }
 
 /**
  * Insert many sessions in one transaction — used when backfilling time that
  * was worked before (or outside) the timer, which can be dozens of rows.
  */
-export async function insertSessions(db: SqlDriver, list: (Omit<Session, "id"> & { id?: string })[]): Promise<Session[]> {
+export async function insertSessions(db: SqlDriver, list: SessionInput[]): Promise<Session[]> {
   if (list.length === 0) return [];
   const known = new Set((await listNodes(db)).map((n) => n.id));
   const full: Session[] = list.map((s) => ({
-    ...s,
-    id: s.id ?? uid(),
+    ...normaliseSession(s),
     node_id: s.node_id && known.has(s.node_id) ? s.node_id : null,
-    planned_seconds: Math.max(0, Math.round(Number(s.planned_seconds) || 0)),
-    actual_seconds: Math.max(0, Math.round(Number(s.actual_seconds) || 0)),
   }));
   await db.transaction(async (tx) => {
     for (const s of full) await tx.execute(SESSION_INSERT_SQL, sessionValues(s));

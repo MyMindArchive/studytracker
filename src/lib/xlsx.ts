@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
-import type { ChecklistItem, DbNode, PctHistory, Session } from "../types";
-import { CHECKLIST_COLUMNS, NODE_COLUMNS, PCT_COLUMNS, SESSION_COLUMNS, WEEKLY_COLUMNS } from "./csv";
+import type { ChecklistItem, DbNode, PctHistory, Session, StatusHistory } from "../types";
+import { CHECKLIST_COLUMNS, NODE_COLUMNS, PCT_COLUMNS, SESSION_COLUMNS, STATUS_COLUMNS, WEEKLY_COLUMNS } from "./csv";
 import type { WeeklySummaryRow } from "./stats";
 
 function sheetFrom<T extends Record<string, unknown>>(rows: T[], columns: (keyof T & string)[]): XLSX.WorkSheet {
@@ -31,6 +31,7 @@ export function buildWorkbook(
   history: PctHistory[],
   weekly: WeeklySummaryRow[],
   checklist: ChecklistItem[] = [],
+  statusHistory: StatusHistory[] = [],
 ): XLSX.WorkBook {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, sheetFrom(nodes as unknown as Record<string, unknown>[], NODE_COLUMNS), "Nodes");
@@ -38,6 +39,7 @@ export function buildWorkbook(
   XLSX.utils.book_append_sheet(wb, sheetFrom(history as unknown as Record<string, unknown>[], PCT_COLUMNS), "PctHistory");
   XLSX.utils.book_append_sheet(wb, sheetFrom(weekly as unknown as Record<string, unknown>[], WEEKLY_COLUMNS), "WeeklySummary");
   XLSX.utils.book_append_sheet(wb, sheetFrom(checklist.map((i) => ({ ...i, done: i.done ? 1 : 0 })) as unknown as Record<string, unknown>[], CHECKLIST_COLUMNS), "Checklist");
+  XLSX.utils.book_append_sheet(wb, sheetFrom(statusHistory as unknown as Record<string, unknown>[], STATUS_COLUMNS), "StatusHistory");
   return wb;
 }
 

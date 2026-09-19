@@ -8,7 +8,7 @@ import { useApp } from "./app";
 export type BlockKind = "work" | "break" | "longbreak";
 export type Phase = "idle" | "running" | "paused";
 
-type PendingSession = Omit<Session, "id">;
+type PendingSession = Omit<Session, "id" | "tz_offset">;
 
 interface TimerState {
   mode: "single" | "cycle";
@@ -118,6 +118,7 @@ export const useTimer = create<TimerState>((set, get) => {
       ended_at: new Date().toISOString(),
       ended_reason: reason,
       note: null,
+      source: "timer",
     };
   };
 

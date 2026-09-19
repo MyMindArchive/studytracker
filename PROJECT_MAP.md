@@ -82,13 +82,21 @@ migrations.ts              versioned schema via PRAGMA user_version; MIGRATIONS 
                            CURRENT_SCHEMA_VERSION, migrate() (version bump inside the same
                            transaction as the DDL; refuses newer-schema or foreign SQLite files).
                            Never edit a shipped entry.
-repo.ts                    (427 lines) every SQL call: nodes CRUD, setPct (+ pct_history),
-                           snapshotSubtree/restoreSubtree (undo), moveNode, duplicateNode,
-                           checklist CRUD + checklistPct/syncChecklistPct, sessions
-                           (insert/assign/note/delete), loadSettings/saveSetting
+repo.ts                    every SQL call: nodes CRUD, setPct (+ pct_history), setStatus
+                           (+ status_history), snapshotSubtree/restoreSubtree (undo),
+                           moveNode, duplicateNode, checklist CRUD + checklistPct/
+                           syncChecklistPct, sessions (insert/assign/note/delete; every
+                           insert carries `source` and `tz_offset`), loadSettings/saveSetting
 ```
 
-Tables: `nodes`, `sessions`, `pct_history`, `checklist_items`, `settings` (key/value JSON).
+Tables: `nodes`, `sessions`, `pct_history`, `status_history`, `checklist_items`,
+`settings` (key/value JSON).
+
+Schema v4 added the provenance the analytics need: `sessions.source`
+(timer | manual | imported | unknown) and `sessions.tz_offset`, plus
+`nodes.planned_start`, `nodes.status` (NULL = read it off the percent,
+'blocked' = waiting on something) and the `status_history` table behind it.
+Rows written before v4 carry source 'unknown' rather than a guess.
 
 ### src/store/ — zustand state (the hub; read these two first)
 ```
@@ -108,9 +116,15 @@ timer.ts  (294)  useTimer — single vs cycle mode, phase idle/running/paused,
 ```
 rollup.ts   computeRollup(nodes, defaultMode) -> Map<id, NodeRollup>; the three rules
             equal | weight | effort; rootTotals, statusFor, hoursPerUnit, subjectIndex
-stats.ts    (367) dashboard maths: hoursToday, thisWeekBySubject, timeBySubject,
+stats.ts    dashboard maths: hoursToday, thisWeekBySubject, timeBySubject,
             plannedVsActual, velocity (+weeks-to-100 forecast), sessionStats, weeklySummary,
             pctAsOf, unassignedHours. UNASSIGNED bucket constant lives here.
+            Also the three provenance-aware views: agingWip (open work flagged
+            late | blocked | overrun | idle | not-started, measured against the
+            p85 of comparable finished tasks), estimateBias (actual ÷ estimate as
+            a log-median ratio, falling back to the pooled ratio under MIN_SUPPORT)
+            and reworkRate (percent changes that went backwards). quantile/median
+            live here too — nothing user-facing is reported as a mean.
 time.ts     date-fns helpers; WEEK_STARTS_ON = 1 (Monday); day/week/month keys,
             fmtHours/fmtDuration/fmtClock, relativeDue (today / in 3d / 2d overdue),
             streak, listWeekStarts
@@ -121,7 +135,8 @@ treeSort.ts TreeSortKey (manual | priority | due | progress | remaining | name),
 csv.ts      csvEscape/toCsv, the column lists (NODE_COLUMNS, SESSION_COLUMNS, …),
             per-table csv writers, parseCsv + parseNodesCsv (import)
 mirror.ts   mirrorFiles() / writeMirror() — regenerates nodes.csv, sessions.csv,
-            pct_history.csv, checklist.csv, weekly_summary.csv. No-op outside Tauri.
+            pct_history.csv, status_history.csv, checklist.csv, weekly_summary.csv.
+            No-op outside Tauri.
 xlsx.ts     SheetJS workbook (frozen headers, autofit) for the export
 skins.ts    SKINS registry: clean | terminal | soft (label, blurb, swatch)
 ids.ts      uid(), nowIso()
