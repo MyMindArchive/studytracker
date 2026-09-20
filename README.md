@@ -172,11 +172,21 @@ inherited by everything beneath it.
   when untagged time exceeds the threshold setting.
 * **Dashboard** — today gauge, this week per subject with a "behind two full weeks" flag,
   stacked time by subject (day/week/month, always with an Unassigned bucket), planned vs
-  actual with an overrun flag (hours > estimate while < 80 %), velocity and naive
-  weeks-to-100 forecast, session stats and hour-of-day heatmap.
+  actual with an overrun flag (hours > estimate while < 80 %), pace against the deadline,
+  session stats and hour-of-day heatmap.
 * **Settings** — storage folder, daily target, presets, cycle defaults, badge threshold,
   default roll-up rule, skin, theme, sound, CSV mirror, xlsx export, CSV merge with preview,
   and **Backup & restore**.
+
+### Pace & finish
+
+Each project shows the pace it is actually moving at, the pace it *needs* from today to
+finish by its deadline, and where today's pace lands it on the day — under 100 % means
+it misses. The deadline is the project's own, or the nearest one among its unfinished
+tasks, so dating the chapter rather than the subject works. Pace is points gained divided
+by the days it took, counted from the day the project started, so a project started this
+morning reads as a day's work rather than an hour's; the dot beside it says how much
+history it rests on.
 
 ## Skins
 

@@ -122,7 +122,9 @@ timer.ts  (294)  useTimer — single vs cycle mode, phase idle/running/paused,
 rollup.ts   computeRollup(nodes, defaultMode) -> Map<id, NodeRollup>; the three rules
             equal | weight | effort; rootTotals, statusFor, hoursPerUnit, subjectIndex
 stats.ts    dashboard maths: hoursToday, thisWeekBySubject, timeBySubject,
-            plannedVsActual, velocity (+weeks-to-100 forecast), sessionStats, weeklySummary,
+            plannedVsActual, velocity (+weeks-to-100 forecast, and DeadlineOutlook: the
+            pace needed from today, where today's pace lands on the deadline, and the
+            verdict on-track|tight|behind|overdue|done), sessionStats, weeklySummary,
             pctAsOf, unassignedHours. UNASSIGNED bucket constant lives here.
             Also the three provenance-aware views: agingWip (open work flagged
             late | blocked | overrun | idle | not-started, measured against the

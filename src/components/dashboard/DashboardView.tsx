@@ -15,9 +15,10 @@ import {
   IDLE_DAYS,
   MIN_SUPPORT,
   PACE_WINDOW_WEEKS,
-  MIN_PACE_DAYS,
   UNASSIGNED,
   type AgingFlag,
+  type DeadlineOutlook,
+  type DeadlineVerdict,
   type AgingRow,
   type BiasRow,
   type SessionStats,
@@ -270,13 +271,18 @@ export function DashboardView() {
                 <thead className="table-head text-left text-[10px]">
                   <tr>
                     <th className="py-1">Project</th>
-                    <th className="py-1 text-right">Now</th>
-                    <th className="py-1 text-right" title="Percentage points gained per week, over the span in the last column">
+                    <th className="w-16 py-1 text-right">Now</th>
+                    <th className="w-24 py-1 text-right" title="Percentage points you are gaining per week">
                       Pace <span className="font-normal opacity-70">pts/wk</span>
                     </th>
-                    <th className="py-1 text-right">Finish</th>
-                    <th className="py-1 text-right" title="How much history the pace rests on">
-                      Based on
+                    <th className="w-24 py-1 text-right" title="Percentage points per week needed from today to finish by the deadline">
+                      Needed <span className="font-normal opacity-70">pts/wk</span>
+                    </th>
+                    <th className="w-36 py-1 text-right" title="Where this pace lands you on the deadline. Under 100 % means you miss it.">
+                      By deadline
+                    </th>
+                    <th className="w-32 py-1 text-right" title="When this pace reaches 100 %, deadline or no deadline">
+                      Finish
                     </th>
                   </tr>
                 </thead>
@@ -287,9 +293,11 @@ export function DashboardView() {
                 </tbody>
               </table>
               <p className="mt-2 text-[10px] leading-4 text-muted">
-                Pace is the points you gained divided by the time it actually took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks
-                back). A project starts at the earliest of its creation or its first logged session, so backfilling hours you already put in moves the start
-                back and corrects the pace. Under {MIN_PACE_DAYS} days of history there is nothing to average, so it reads &ldquo;too new&rdquo; instead of guessing.
+                Pace is the points you gained divided by the days it took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks back). A
+                project starts at the earliest of its creation or its first logged session, so backfilling hours you already put in moves the start back and
+                corrects the pace. Needed is what it would take from today to reach 100&thinsp;% by the deadline &mdash; a project&rsquo;s own date, or the
+                nearest one among its unfinished tasks. Compare the two: pace below needed is the gap you have to make up, and &ldquo;By deadline&rdquo; is
+                where today&rsquo;s pace actually lands you. A young project&rsquo;s pace rests on very little; the dot beside it says how much.
               </p>
             </>
           )}
@@ -592,12 +600,22 @@ const CONFIDENCE_WHY: Record<VelocityRow["confidence"], string> = {
   good: "Several weeks of steady movement behind this.",
 };
 
+const VERDICT_TONE: Record<DeadlineVerdict, string> = {
+  "on-track": "text-ok",
+  tight: "text-warn",
+  behind: "text-danger",
+  overdue: "text-danger",
+  done: "text-ok",
+};
+
 function PaceRow({ v }: { v: VelocityRow }) {
+  const o = v.outlook;
   const why = [
     `${v.gained >= 0 ? "+" : ""}${v.gained.toFixed(1)} points over ${fmtSpan(v.basisWeeks)}`,
     `${v.activeWeeks} week${v.activeWeeks === 1 ? "" : "s"} of that moved (${v.activePace.toFixed(1)} pts/wk while working)`,
     v.startedAt ? `started ${fmtEta(v.startedAt)}` : null,
     CONFIDENCE_WHY[v.confidence],
+    o ? deadlineWhy(v, o) : "No deadline on this project or its tasks, so there is nothing to be on track for.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -609,32 +627,61 @@ function PaceRow({ v }: { v: VelocityRow }) {
         {v.name}
       </td>
       <td className="py-1 text-right tabular-nums">{v.currentPct.toFixed(1)}%</td>
-      <td className={cn("py-1 text-right tabular-nums", v.velocity <= 0 && "text-muted")}>
-        {v.status === "ok" ? (v.velocity >= 10 ? v.velocity.toFixed(0) : v.velocity.toFixed(1)) : "\u2013"}
+      <td className="py-1 text-right">
+        <span className={cn("inline-flex items-center justify-end gap-1.5 whitespace-nowrap tabular-nums", v.velocity <= 0 && "text-muted")}>
+          {v.status === "ok" ? fmtPts(v.velocity) : "\u2013"}
+          {v.status === "ok" && <span className={cn("dot h-1.5 w-1.5", CONFIDENCE_DOT[v.confidence])} />}
+        </span>
+      </td>
+      <td className="py-1 text-right tabular-nums">
+        {o === null || o.needed === null ? <span className="text-muted">&ndash;</span> : o.verdict === "done" ? <span className="text-muted">&ndash;</span> : fmtPts(o.needed)}
+      </td>
+      <td className="py-1 text-right">
+        {o === null ? (
+          <span className="text-muted" title="Set a deadline on this project, or on one of its tasks, to see this.">
+            no deadline
+          </span>
+        ) : (
+          <span className={cn("whitespace-nowrap tabular-nums", VERDICT_TONE[o.verdict])}>
+            {o.verdict === "done" ? "done" : o.verdict === "overdue" ? "overdue" : `${o.projectedPct.toFixed(0)}%`}{" "}
+            <span className="text-muted" title={o.inherited ? "Date taken from a task, not from the project itself" : undefined}>
+              · {o.inherited ? "→" : ""}
+              {fmtEta(o.date)}
+            </span>
+          </span>
+        )}
       </td>
       <td className="py-1 text-right">
         {v.status === "done" ? (
           <span className="text-ok">done</span>
-        ) : v.status === "too-new" ? (
-          <span className="text-muted" title={`Needs at least ${MIN_PACE_DAYS} days of history before a pace means anything. Log the hours you already put in and the project's start moves back with them.`}>
-            too new
-          </span>
         ) : v.status === "stalled" || v.etaDate === null ? (
-          <span className="text-muted">stalled</span>
+          <span className="text-muted" title="Nothing has moved forward yet, so there is no rate to project from.">
+            stalled
+          </span>
         ) : (
           <span className="whitespace-nowrap tabular-nums">
             {fmtRemaining(v.forecastWeeks!)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
           </span>
         )}
       </td>
-      <td className="py-1 text-right">
-        <span className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap tabular-nums text-muted">
-          {fmtSpan(v.basisWeeks)}
-          <span className={cn("dot h-1.5 w-1.5", CONFIDENCE_DOT[v.confidence])} />
-        </span>
-      </td>
     </tr>
   );
+}
+
+/** Plain-language version of the two deadline numbers, for the row tooltip. */
+function deadlineWhy(v: VelocityRow, o: DeadlineOutlook): string {
+  const when = `${fmtEta(o.date)}${o.inherited ? " (from a task, not the project)" : ""}`;
+  if (o.verdict === "done") return `Finished. Deadline was ${when}.`;
+  if (o.verdict === "overdue") return `Deadline ${when} has passed with ${(100 - v.currentPct).toFixed(0)} points still open.`;
+  const days = o.daysLeft === 0 ? "today" : `in ${o.daysLeft} day${o.daysLeft === 1 ? "" : "s"}`;
+  const rate = `You are gaining ${fmtPts(v.velocity)} pts/wk and need ${fmtPts(o.needed!)}.`;
+  if (o.verdict === "on-track") return `Due ${when}, ${days}. ${rate} This pace gets there.`;
+  return `Due ${when}, ${days}. ${rate} This pace lands at ${o.projectedPct.toFixed(0)} %, ${(100 - o.projectedPct).toFixed(0)} points short.`;
+}
+
+/** Whole numbers once the rate is big enough that a decimal is false precision. */
+function fmtPts(n: number): string {
+  return Math.abs(n) >= 10 ? n.toFixed(0) : n.toFixed(1);
 }
 
 const tooltipStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--fg)" };

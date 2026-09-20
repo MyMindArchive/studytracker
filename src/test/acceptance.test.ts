@@ -391,11 +391,12 @@ describe("statistics", () => {
     // Typed into the app today, at a percent earned over the previous month.
     await setPct(db, l.id, 27.8, now.toISOString());
 
-    // With nothing but today's entry there is no honest rate.
+    // With nothing but today's entry it reads as a single day's work: a real
+    // rate, but a steep one resting on one data point.
     const bare = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
-    expect(bare.status).toBe("too-new");
-    expect(bare.forecastWeeks).toBeNull();
-    expect(bare.confidence).toBe("none");
+    expect(bare.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(bare.velocity).toBeCloseTo(27.8 * 7, 5);
+    expect(bare.confidence).toBe("thin");
 
     // Backfill four weeks of work; the project demonstrably started then.
     for (let d = 28; d >= 1; d -= 7) {
@@ -419,15 +420,19 @@ describe("statistics", () => {
     expect(v.forecastWeeks).toBeCloseTo((100 - 27.8) / (27.8 / 4), 5);
   });
 
-  it("withholds a pace under three days of history rather than inventing one", async () => {
+  it("paces a project born today over a whole day, not over the hour it has lived", async () => {
     const now = new Date("2026-09-16T12:00:00");
     const s = await createNode(db, { parent_id: null, name: "Today" });
     const l = await createNode(db, { parent_id: s.id, name: "L" });
     await setPct(db, l.id, 48.3, now.toISOString());
     const v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
-    expect(v.status).toBe("too-new");
-    expect(v.velocity).toBe(0);
-    expect(v.etaDate).toBeNull();
+    // 48.3 points in a day, not 48.3 points in the minute since it was typed:
+    // dividing by the clock here once produced four-figure rates.
+    expect(v.status).toBe("ok");
+    expect(v.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(v.velocity).toBeCloseTo(48.3 * 7, 5);
+    // A day of history is a day of history; the dot says so rather than hiding the row.
+    expect(v.confidence).toBe("thin");
   });
 
   it("discarded sessions are not evidence that a project started", async () => {
@@ -448,7 +453,10 @@ describe("statistics", () => {
       note: null,
     });
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
-    expect(v.status).toBe("too-new");
+    // The month-old discarded block must not become the project's start, which
+    // would spread today's 20 points over four weeks and halve the pace.
+    expect(v.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(v.velocity).toBeCloseTo(140, 5);
   });
 
   it("sizes the chart window to the oldest project, within bounds", async () => {
@@ -496,6 +504,105 @@ describe("statistics", () => {
     const lastWeek = v.weekly[v.weekly.length - 2];
     expect(lastWeek.pct).toBe(100);
     expect(v.currentPct).toBe(50);
+  });
+
+  /** A project that gained `gained` points a week ago and is `gained` now, due on `deadline`. */
+  async function paced(name: string, gained: number, deadline: string | null, now: Date) {
+    const s = await createNode(db, { parent_id: null, name, deadline });
+    const l = await createNode(db, { parent_id: s.id, name: `${name} task` });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [new Date(now.getTime() - 7 * 86_400_000).toISOString(), s.id, l.id]);
+    await setPct(db, l.id, gained, now.toISOString());
+    return s;
+  }
+
+  it("needed pace is what it takes from today, and it exists before any history does", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    // Created this minute, 20 % done, four weeks to run: 80 points over 28 days.
+    const s = await createNode(db, { parent_id: null, name: "Fresh", deadline: "2026-10-14" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await setPct(db, l.id, 20, now.toISOString());
+    const v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(v.outlook!.daysLeft).toBe(28);
+    expect(v.outlook!.needed).toBeCloseTo(80 / (28 / 7), 5); // 20 pts/wk
+  });
+
+  it("projects where the current pace lands on the deadline, and calls the verdict", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    // 10 points last week, 28 days left: 40 more points, landing at 50.
+    const behind = await paced("Behind", 10, "2026-10-14", now);
+    // 30 points last week, 28 days left: 120 more, so it gets there.
+    const fine = await paced("Fine", 30, "2026-10-14", now);
+    const rows = velocity(await listNodes(db), await listPctHistory(db), [], now);
+
+    const b = rows.find((r) => r.subjectId === behind.id)!.outlook!;
+    expect(b.projectedPct).toBeCloseTo(50, 5);
+    expect(b.verdict).toBe("behind");
+    expect(b.needed).toBeCloseTo(22.5, 5); // 90 points over 4 weeks
+
+    const f = rows.find((r) => r.subjectId === fine.id)!.outlook!;
+    expect(f.projectedPct).toBe(100);
+    expect(f.verdict).toBe("on-track");
+  });
+
+  it("pace >= needed and projected >= 100 are the same verdict, never contradictory", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    for (const [name, gained] of [["A", 5], ["B", 17.5], ["C", 40]] as const) {
+      await paced(name, gained, "2026-10-14", now);
+    }
+    for (const r of velocity(await listNodes(db), await listPctHistory(db), [], now)) {
+      const o = r.outlook!;
+      expect(o.projectedPct >= 100).toBe(r.velocity >= o.needed! - 1e-9);
+    }
+  });
+
+  it("takes the deadline from the nearest unfinished task when the project has none", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "No date" });
+    const early = await createNode(db, { parent_id: s.id, name: "Early", deadline: "2026-09-20" });
+    await createNode(db, { parent_id: s.id, name: "Late", deadline: "2026-11-01" });
+    await setPct(db, early.id, 40, now.toISOString());
+
+    let v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(v.outlook!.inherited).toBe(true);
+    expect(v.outlook!.date.getMonth()).toBe(8); // September, the nearer one
+
+    // Finish that task and the project answers to the next one instead.
+    await setPct(db, early.id, 100, now.toISOString());
+    v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(v.outlook!.date.getMonth()).toBe(10); // November
+  });
+
+  it("no deadline anywhere means no outlook, rather than a made-up one", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await paced("Loose", 10, null, now);
+    const v = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
+    expect(v.outlook).toBeNull();
+    expect(v.velocity).toBeCloseTo(10, 5); // the pace itself is unaffected
+  });
+
+  it("a passed deadline reads overdue, and a finished project reads done whatever the date", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const late = await paced("Late", 60, "2026-09-01", now);
+    const s = await createNode(db, { parent_id: null, name: "Finished", deadline: "2026-09-01" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await setPct(db, l.id, 100, now.toISOString());
+
+    const rows = velocity(await listNodes(db), await listPctHistory(db), [], now);
+    const o = rows.find((r) => r.subjectId === late.id)!.outlook!;
+    expect(o.verdict).toBe("overdue");
+    expect(o.needed).toBeNull(); // no rate makes a passed date reachable
+    expect(o.daysLeft).toBeLessThan(0);
+
+    expect(rows.find((r) => r.subjectId === s.id)!.outlook!.verdict).toBe("done");
+  });
+
+  it("a deadline today asks for the rest of it today rather than dividing by zero", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await paced("Due today", 25, "2026-09-16", now);
+    const o = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!.outlook!;
+    expect(o.daysLeft).toBe(0);
+    expect(Number.isFinite(o.needed!)).toBe(true);
+    expect(o.needed).toBeCloseTo(75 * 7, 5); // the remaining 75 points, within the day
   });
 });
 

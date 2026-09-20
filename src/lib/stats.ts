@@ -1,8 +1,9 @@
-import { addWeeks, endOfWeek, startOfDay, subDays } from "date-fns";
+import { addWeeks, differenceInCalendarDays, endOfWeek, startOfDay, subDays } from "date-fns";
 import type { DbNode, PctHistory, Session, SessionSource, StatusHistory } from "../types";
 import { computeRollup, childrenOf, hoursPerUnit, subjectIndex, type NodeRollup } from "./rollup";
 import type { RollupMode } from "../types";
 import { bucketKey, dayKey, fromIso, listWeekStarts, streak, weekKey, weekStart, WEEK_STARTS_ON } from "./time";
+import { effectiveDeadlines } from "./treeSort";
 
 export const UNASSIGNED = "Unassigned";
 
@@ -221,12 +222,16 @@ export function plannedVsActual(nodes: DbNode[], sessions: Session[], roll?: Map
  */
 export const PACE_WINDOW_WEEKS = 6;
 /**
- * Below this much real history there is nothing to average, so the pace is
- * withheld rather than guessed. Dividing 30 % by half a day of history once
- * produced "420 pts/wk, done tomorrow" — a confident-looking number resting
- * on one data point.
+ * Pace divides by whole elapsed days, never a fraction of one. Dividing 30 %
+ * by half a day of history once produced "420 pts/wk, done tomorrow" — a
+ * confident-looking number resting on one data point. Counting by date rather
+ * than by clock removes that at the source: the denominator cannot fall below
+ * a day, so a project started this morning reads as a day's work, not as a
+ * rate per hour. A young number is still a thin one, which is what
+ * `confidence` is for; it is no longer a reason to withhold the number, since
+ * "too new" tells a student nothing they can act on.
  */
-export const MIN_PACE_DAYS = 3;
+const MIN_PACE_DAYS = 1;
 const DAY_MS = 86_400_000;
 /**
  * Chart window when none is given: wide enough to hold the oldest project,
@@ -266,15 +271,47 @@ export interface VelocityRow {
   status: VelocityStatus;
   /** first moment this project had anything to measure */
   startedAt: Date | null;
+  /** how it is doing against its deadline; null when neither it nor its tasks have one */
+  outlook: DeadlineOutlook | null;
 }
 
 /**
  *  done     already at 100
- *  too-new  less than MIN_PACE_DAYS of history — no honest rate exists yet
- *  stalled  enough history, but nothing moved forward
+ *  stalled  nothing has moved forward, so no finish date can be projected
  *  ok       a real pace, so a finish date can be projected
  */
-export type VelocityStatus = "done" | "too-new" | "stalled" | "ok";
+export type VelocityStatus = "done" | "stalled" | "ok";
+
+/**
+ *  on-track  the current pace lands on 100 by the deadline
+ *  tight     it lands just short — a bad week decides it
+ *  behind    it lands well short; the pace has to change
+ *  overdue   the date has passed with work still open
+ *  done      finished, whatever the date says
+ */
+export type DeadlineVerdict = "on-track" | "tight" | "behind" | "overdue" | "done";
+
+/** Projected completion at or above this is called "tight" rather than "behind". */
+const TIGHT_PCT = 90;
+
+/**
+ * Where a project stands against its deadline. `needed` and `projectedPct`
+ * are two readings of one fact — pace >= needed is the same condition as
+ * projectedPct >= 100 — kept apart because they answer different questions:
+ * how much faster, and how far short.
+ */
+export interface DeadlineOutlook {
+  date: Date;
+  /** true when the date came from a task rather than from the project itself */
+  inherited: boolean;
+  /** whole days from today to the deadline; negative once it has passed */
+  daysLeft: number;
+  /** percentage points per week needed from here to finish on time; null once the date has passed */
+  needed: number | null;
+  /** where the current pace lands on the day, 0..100 */
+  projectedPct: number;
+  verdict: DeadlineVerdict;
+}
 
 /**
  * Earliest moment each node is known to have existed: its `created_at`, an
@@ -344,9 +381,48 @@ export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date, born?:
  * Idle weeks *after* the start still count, because a month off is a real part
  * of how fast a project is moving; `activePace` reports the other reading.
  */
+/**
+ * A project is measured against its own deadline, or failing that against the
+ * earliest one among its unfinished tasks — most people date the chapter, not
+ * the subject, and a project with a task due Friday is due Friday.
+ */
+function outlookFor(
+  deadline: { date: string; inherited: boolean } | undefined,
+  currentPct: number,
+  pace: number,
+  now: Date,
+): DeadlineOutlook | null {
+  if (!deadline) return null;
+  const date = fromIso(deadline.date);
+  if (!Number.isFinite(date.getTime())) return null;
+  const daysLeft = differenceInCalendarDays(date, startOfDay(now));
+
+  if (currentPct >= 100) {
+    return { date, inherited: deadline.inherited, daysLeft, needed: 0, projectedPct: 100, verdict: "done" };
+  }
+  if (daysLeft < 0) {
+    return { date, inherited: deadline.inherited, daysLeft, needed: null, projectedPct: currentPct, verdict: "overdue" };
+  }
+  // Due today still leaves today: a whole week's worth of "needed" rather than
+  // a division by zero, which is also the honest reading — finish it today.
+  const weeksLeft = Math.max(1, daysLeft) / 7;
+  const needed = (100 - currentPct) / weeksLeft;
+  const projectedPct = Math.min(100, Math.max(0, currentPct + Math.max(0, pace) * weeksLeft));
+  const verdict: DeadlineVerdict = projectedPct >= 100 ? "on-track" : projectedPct >= TIGHT_PCT ? "tight" : "behind";
+  return { date, inherited: deadline.inherited, daysLeft, needed, projectedPct, verdict };
+}
+
 export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Session[] = [], now = new Date(), weeks?: number, mode?: RollupMode): VelocityRow[] {
   const subjects = nodes.filter((n) => n.parent_id === null);
   const current = computeRollup(nodes, mode);
+  const kids = new Map<string | null, DbNode[]>();
+  for (const n of nodes) {
+    const list = kids.get(n.parent_id);
+    if (list) list.push(n);
+    else kids.set(n.parent_id, [n]);
+  }
+  // A finished task's date no longer pulls its project forward.
+  const deadlines = effectiveDeadlines(kids, (id) => (current.get(id)?.pct ?? 0) >= 100);
   const born = birthTimes(nodes, history);
   const subjOf = subjectIndex(nodes);
   const nowMs = now.getTime();
@@ -404,13 +480,16 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
     }));
 
     const cur = current.get(s.id)?.pct ?? 0;
-    const spanStartMs = Math.max(startedMs, nowMs - PACE_WINDOW_WEEKS * 7 * DAY_MS);
+    // Never measure over less than a day: a project created this morning would
+    // otherwise be read at the same instant it started, gain nothing, and
+    // report itself stalled. Reaching back past its birth costs nothing — it
+    // was at 0 then — and turns that into "27 points today".
+    const spanStartMs = Math.min(Math.max(startedMs, nowMs - PACE_WINDOW_WEEKS * 7 * DAY_MS), nowMs - MIN_PACE_DAYS * DAY_MS);
     const pctThen = rollupAt(spanStartMs).get(s.id)?.pct ?? 0;
     const gained = cur - pctThen;
-    const spanDays = Math.max(0, (nowMs - spanStartMs) / DAY_MS);
+    const spanDays = Math.max(MIN_PACE_DAYS, Math.round((nowMs - spanStartMs) / DAY_MS));
     const basisWeeks = spanDays / 7;
-    const tooNew = spanDays < MIN_PACE_DAYS;
-    const v = tooNew ? 0 : gained / basisWeeks;
+    const v = gained / basisWeeks;
 
     let activeWeeks = 0;
     for (let i = 1; i < weekly.length; i++) {
@@ -423,11 +502,11 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
     if (activeWeeks === 0 && gained > 0.05) activeWeeks = 1;
     const activePace = activeWeeks > 0 ? gained / activeWeeks : 0;
 
-    const status: VelocityStatus = cur >= 100 ? "done" : tooNew ? "too-new" : v > 0 ? "ok" : "stalled";
+    const status: VelocityStatus = cur >= 100 ? "done" : v > 0 ? "ok" : "stalled";
     const forecastWeeks = status === "done" ? 0 : status === "ok" ? (100 - cur) / v : null;
     const etaDate = forecastWeeks === null || forecastWeeks === 0 ? null : new Date(nowMs + forecastWeeks * 7 * DAY_MS);
     const confidence: VelocityConfidence =
-      tooNew || gained <= 0.05
+      gained <= 0.05
         ? "none"
         : basisWeeks < 1 || activeWeeks <= 1
           ? "thin"
@@ -451,6 +530,7 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
       confidence,
       status,
       startedAt,
+      outlook: outlookFor(deadlines.get(s.id), cur, v, now),
     };
   });
 }
