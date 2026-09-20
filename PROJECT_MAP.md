@@ -86,7 +86,12 @@ repo.ts                    every SQL call: nodes CRUD, setPct (+ pct_history), s
                            (+ status_history), snapshotSubtree/restoreSubtree (undo),
                            moveNode, duplicateNode, checklist CRUD + checklistPct/
                            syncChecklistPct, sessions (insert/assign/note/delete; every
-                           insert carries `source` and `tz_offset`), loadSettings/saveSetting
+                           insert carries `source` and `tz_offset`), loadSettings/saveSetting,
+                           readAll/replaceAll (backup + restore; replaceAll wipes and
+                           re-inserts everything in one transaction, recomputes depth,
+                           and keeps the settings when the file carries none)
+dbfile.ts                  backupFromDbBytes(): opens a picked .db in a throwaway sql.js
+                           connection, migrates it, and reads it out as a backup
 ```
 
 Tables: `nodes`, `sessions`, `pct_history`, `status_history`, `checklist_items`,
@@ -104,7 +109,7 @@ app.ts    (555)  useApp — db handle, nodes/sessions/history/checklist/settings
                  derived rollup map + root totals, view/selection/expanded/subjectFilter,
                  toasts + undoStack. Actions: boot, chooseStorage, reload, node CRUD,
                  setPct, move/duplicate, checklist, sessions, updateSetting,
-                 exportXlsx, importNodes, undo. Also applyTheme() (sets data-skin +
+                 exportXlsx, importNodes, buildBackup/exportBackup/restoreBackup, undo. Also applyTheme() (sets data-skin +
                  .dark on <html>). Debounced CSV mirror write after each mutation.
 timer.ts  (294)  useTimer — single vs cycle mode, phase idle/running/paused,
                  blockKind work/break/longbreak, wall-clock endsAt (survives throttling),
@@ -133,7 +138,16 @@ treeSort.ts TreeSortKey (manual | priority | due | progress | remaining | name),
             effectiveDeadlines (own date else earliest open descendant), priorityScore
             (remaining effort / days until due)
 csv.ts      csvEscape/toCsv, the column lists (NODE_COLUMNS, SESSION_COLUMNS, …),
-            per-table csv writers, parseCsv + parseNodesCsv (import)
+            per-table csv writers, parseCsv + parseNodesCsv (merge import), and the
+            full-fidelity readers used by a restore: csvRows/csvHasColumns,
+            parseNodesFullCsv, parseSessionsCsv, parsePctHistoryCsv,
+            parseStatusHistoryCsv, parseChecklistCsv
+backup.ts   the .json backup format: buildBackup/parseBackup/backupFilename,
+            backupCounts, backupFromCsv (+ classifyCsv, which names a mirror file
+            from its header rather than its name) and orderNodesForInsert
+            (parents before children; an orphan becomes a project)
+restore.ts  backupFromFiles() — decides by content whether the picked files are a
+            JSON backup, a SQLite database or a set of CSVs, and routes accordingly
 mirror.ts   mirrorFiles() / writeMirror() — regenerates nodes.csv, sessions.csv,
             pct_history.csv, status_history.csv, checklist.csv, weekly_summary.csv.
             No-op outside Tauri.
@@ -169,7 +183,9 @@ dashboard/DashboardView.tsx (335) today gauge, week-by-subject, stacked time, pl
                            actual, velocity, session stats, hour-of-day heatmap (Recharts)
 settings/SettingsView.tsx  storage folder, targets, presets, cycle defaults, Focus screen
                            (backdrop, overlay, bell), roll-up rule, skin/theme/sound,
-                           CSV mirror, xlsx export, CSV import w/ preview
+                           CSV mirror, xlsx export, CSV merge w/ preview,
+                           Backup & restore (download one .json; restore from
+                           .json / .db / the CSVs, with a before-and-after confirm)
 settings/StoragePicker.tsx first-run folder choice
 ui/                        Field/NumberInput, Modal, NodePicker, ProgressBar, RangeSlider,
                            Sparkline, Toasts (Radix primitives underneath)
@@ -180,6 +196,11 @@ ui/                        Field/NumberInput, Modal, NodePicker, ProgressBar, Ra
 acceptance.test.ts (382)   vitest against in-memory sql.js: roll-up rules, checklist,
                            migrations, sessions/cycles/undo, statistics, csv+xlsx round trip,
                            driver transaction serialisation. `npm test`
+backup.test.ts             backup/restore: json round trip (exact), restore over a
+                           non-empty database, the CSV mirror restored as a set,
+                           .db files, content-based routing, and hand-edited files
+                           (missing parents, bad depth, failed restore leaves the
+                           database untouched)
 treeSort.test.ts           tree sort keys, inherited deadlines, priority score, relativeDue
 ```
 

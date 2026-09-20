@@ -1,12 +1,14 @@
 import { useRef, useState } from "react";
-import { Download, FolderOpen, Image as ImageIcon, Music, RefreshCw, Square, Upload, Volume2 } from "lucide-react";
+import { AlertTriangle, Download, FolderOpen, HardDriveDownload, Image as ImageIcon, Music, RefreshCw, Square, Upload, Volume2 } from "lucide-react";
 import { useApp } from "../../store/app";
 import { Field, NumberInput } from "../ui/Field";
 import { Modal } from "../ui/Modal";
 import { CURRENT_SCHEMA_VERSION } from "../../db/migrations";
-import { copyDatabase, dirname, fileExists, isTauri, openPath, pickFolder, pickOpenFile, readText, downloadBlob, joinPath, playChime, stopChime } from "../../platform";
+import { copyDatabase, dirname, fileExists, isTauri, openPath, pickFolder, pickOpenFile, pickOpenFiles, readBytes, readText, downloadBlob, joinPath, playChime, stopChime } from "../../platform";
 import { dataUrlBytes, fmtBytes, pickMedia, shrinkImage, IMAGE_QUALITIES, IMAGE_QUALITY_LABEL, IMAGE_QUALITY_SIDE, MAX_AUDIO_BYTES } from "../../lib/media";
 import { parseNodesCsv, type ImportedNodeRow } from "../../lib/csv";
+import { backupCounts, type BackupFile } from "../../lib/backup";
+import { backupFromFiles, type PickedFile } from "../../lib/restore";
 import { mirrorFiles, writeMirror } from "../../lib/mirror";
 import { DB_FILENAME, rememberStoragePath } from "../../db";
 import { ROLLUP_MODES, type Settings } from "../../types";
@@ -23,14 +25,22 @@ export function SettingsView() {
   const sessions = useApp((s) => s.sessions);
   const history = useApp((s) => s.history);
   const checklist = useApp((s) => s.checklist);
+  const statusHistory = useApp((s) => s.statusHistory);
   const exportXlsx = useApp((s) => s.exportXlsx);
   const importNodes = useApp((s) => s.importNodes);
+  const exportBackup = useApp((s) => s.exportBackup);
+  const restoreBackup = useApp((s) => s.restoreBackup);
+  const schemaVersion = useApp((s) => s.schemaVersion);
   const toast = useApp((s) => s.toast);
   const db = useApp((s) => s.db);
 
   const [presetsDraft, setPresetsDraft] = useState<string | null>(null);
   const [preview, setPreview] = useState<ImportedNodeRow[] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const restoreRef = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<{ backup: BackupFile; from: string } | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [saveFirst, setSaveFirst] = useState(true);
 
   const setCycle = (patch: Partial<Settings["cycle_defaults"]>) => update("cycle_defaults", { ...settings.cycle_defaults, ...patch });
 
@@ -63,6 +73,42 @@ export function SettingsView() {
       setPreview(parseNodesCsv(await readText(path)));
     } else {
       fileRef.current?.click();
+    }
+  };
+
+  const readPicked = async (files: PickedFile[], label: string) => {
+    try {
+      setPending({ backup: await backupFromFiles(files, schemaVersion), from: label });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), undefined, 10000);
+    }
+  };
+
+  const startRestore = async () => {
+    if (isTauri()) {
+      const paths = await pickOpenFiles([{ name: "Backup, database or CSV", extensions: ["json", "db", "sqlite", "csv"] }]);
+      if (!paths.length) return;
+      const files = await Promise.all(paths.map(async (p) => ({ name: p.split(/[\\/]/).pop() ?? p, bytes: await readBytes(p) })));
+      await readPicked(files, files.map((f) => f.name).join(", "));
+    } else {
+      restoreRef.current?.click();
+    }
+  };
+
+  const applyRestore = async () => {
+    if (!pending) return;
+    setRestoring(true);
+    try {
+      // The one irreversible write in the app, so the way out of a mis-picked
+      // file is offered before it happens rather than afterwards.
+      if (saveFirst) await exportBackup();
+      const c = await restoreBackup(pending.backup);
+      setPending(null);
+      toast(`Restored ${plural(c.nodes, "project or task", "projects and tasks")}, ${plural(c.sessions, "session")}, ${plural(c.history, "history row")}`, undefined, 8000);
+    } catch (e) {
+      toast(`Restore failed — nothing was changed: ${e instanceof Error ? e.message : String(e)}`, undefined, 12000);
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -132,17 +178,18 @@ export function SettingsView() {
               className="btn"
               onClick={async () => {
                 if (isTauri() && dbPath) {
-                  await writeMirror(dirname(dbPath), { nodes, sessions, history, checklist, rollupMode: settings.rollup_mode });
+                  await writeMirror(dirname(dbPath), { nodes, sessions, history, checklist, statusHistory, rollupMode: settings.rollup_mode });
                   toast("CSV mirror regenerated");
                 } else {
-                  for (const [name, text] of Object.entries(mirrorFiles({ nodes, sessions, history, checklist, rollupMode: settings.rollup_mode }))) downloadBlob(name, text, "text/csv");
+                  for (const [name, text] of Object.entries(mirrorFiles({ nodes, sessions, history, checklist, statusHistory, rollupMode: settings.rollup_mode })))
+                    downloadBlob(name, text, "text/csv");
                 }
               }}
             >
               <RefreshCw size={14} /> {isTauri() ? "Regenerate CSV mirror now" : "Download CSVs"}
             </button>
             <button
-              className="btn btn-primary"
+              className="btn"
               onClick={async () => {
                 const p = await exportXlsx();
                 if (p) toast(`Workbook saved: ${p}`);
@@ -151,7 +198,7 @@ export function SettingsView() {
               <Download size={14} /> Export .xlsx
             </button>
             <button className="btn" onClick={startImport}>
-              <Upload size={14} /> Import nodes CSV…
+              <Upload size={14} /> Merge nodes from CSV…
             </button>
             {!isTauri() && db instanceof SqlJsDriver && (
               <button className="btn" onClick={() => downloadBlob(DB_FILENAME, db.exportBytes(), "application/x-sqlite3")}>
@@ -170,6 +217,48 @@ export function SettingsView() {
               }}
             />
           </div>
+        </Section>
+
+        <Section
+          title="Backup & restore"
+          desc="One file with everything in it: projects, tasks, logged time, history, checklists and settings. Restoring replaces what is in the app now."
+        >
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                try {
+                  const p = await exportBackup();
+                  if (p) toast(isTauri() ? `Backup saved: ${p}` : `Backup downloaded: ${p}`);
+                } catch (e) {
+                  toast(`Could not write the backup: ${e instanceof Error ? e.message : String(e)}`, undefined, 10000);
+                }
+              }}
+            >
+              <HardDriveDownload size={14} /> Download backup
+            </button>
+            <button className="btn" onClick={startRestore}>
+              <Upload size={14} /> Restore from backup…
+            </button>
+            <input
+              ref={restoreRef}
+              type="file"
+              multiple
+              accept=".json,.db,.sqlite,.csv,application/json,text/csv"
+              className="hidden"
+              onChange={async (e) => {
+                const list = [...(e.target.files ?? [])];
+                e.target.value = "";
+                if (!list.length) return;
+                const files: PickedFile[] = await Promise.all(list.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+                await readPicked(files, files.map((f) => f.name).join(", "));
+              }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            Restore takes the backup <code>.json</code>, a <code>{DB_FILENAME}</code> file, or the exported CSVs — select <code>nodes.csv</code> together with{" "}
+            <code>sessions.csv</code> and the rest in one go, and the sessions and history come back with them.
+          </p>
         </Section>
 
         <Section title="Targets">
@@ -350,6 +439,67 @@ export function SettingsView() {
       </div>
 
       <Modal
+        open={pending !== null}
+        onOpenChange={(o) => !o && !restoring && setPending(null)}
+        title="Restore from backup"
+        description="Everything currently in StudyTracker is replaced by the contents of this file. This cannot be undone."
+        footer={
+          <>
+            <button className="btn" disabled={restoring} onClick={() => setPending(null)}>
+              Cancel
+            </button>
+            <button className="btn btn-danger" disabled={restoring} onClick={applyRestore}>
+              {restoring ? "Restoring…" : "Replace everything"}
+            </button>
+          </>
+        }
+      >
+        {pending && (
+          <div className="flex flex-col gap-3 text-sm">
+            <p className="text-xs text-muted">
+              From <span className="font-mono">{pending.from}</span>
+              {pending.backup.exported_at ? ` · exported ${pending.backup.exported_at.slice(0, 16).replace("T", " ")}` : ""}
+            </p>
+            <table className="w-full text-xs">
+              <thead className="table-head text-left">
+                <tr>
+                  <th className="px-2 py-1"> </th>
+                  <th className="px-2 py-1 text-right">In the app now</th>
+                  <th className="px-2 py-1 text-right">After restoring</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(
+                  [
+                    ["Projects and tasks", nodes.length, backupCounts(pending.backup).nodes],
+                    ["Sessions", sessions.length, backupCounts(pending.backup).sessions],
+                    ["History rows", history.length + statusHistory.length, backupCounts(pending.backup).history],
+                    ["Checklist items", checklist.length, backupCounts(pending.backup).checklist],
+                  ] as const
+                ).map(([label, before, after]) => (
+                  <tr key={label} className="border-t border-app">
+                    <td className="px-2 py-1">{label}</td>
+                    <td className="px-2 py-1 text-right text-muted">{before}</td>
+                    <td className="px-2 py-1 text-right font-medium">{after}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {backupCounts(pending.backup).settings === 0 && (
+              <p className="flex items-start gap-1.5 text-xs text-muted">
+                <AlertTriangle size={13} className="mt-px shrink-0" />
+                This file carries no settings, so targets, timer presets and the backdrop stay as they are now.
+              </p>
+            )}
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={saveFirst} onChange={(e) => setSaveFirst(e.target.checked)} />
+              {isTauri() ? "Save a backup of my current data first" : "Download a backup of my current data first"}
+            </label>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
         open={preview !== null}
         onOpenChange={(o) => !o && setPreview(null)}
         title="Import nodes from CSV"
@@ -414,6 +564,8 @@ export function SettingsView() {
     </div>
   );
 }
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
   return (

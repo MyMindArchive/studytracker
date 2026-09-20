@@ -40,6 +40,14 @@ export async function pickOpenFile(filters: { name: string; extensions: string[]
   return typeof res === "string" ? res : null;
 }
 
+/** Several files at once (a CSV restore takes the whole mirror). */
+export async function pickOpenFiles(filters: { name: string; extensions: string[] }[]): Promise<string[]> {
+  if (!isTauri()) return [];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const res = await open({ multiple: true, filters });
+  return Array.isArray(res) ? res : typeof res === "string" ? [res] : [];
+}
+
 export async function pickSaveFile(defaultName: string, filters: { name: string; extensions: string[] }[]): Promise<string | null> {
   if (!isTauri()) return null;
   const { save } = await import("@tauri-apps/plugin-dialog");

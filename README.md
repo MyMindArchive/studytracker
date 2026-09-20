@@ -80,6 +80,29 @@ backups/               daily copy of the .db, last seven kept
 
 The chosen path is remembered in the webview's localStorage; change it under Settings.
 
+## Backup and restore
+
+**Settings → Backup & restore → Download backup** writes one `.json` file holding everything:
+projects and tasks, logged sessions, percent and status history, checklists and settings.
+Keep it wherever you keep your own files — it is the copy that survives a lost laptop, a
+cleared browser or a move between the desktop app and the browser edition.
+
+**Restore from backup…** takes that file back in. It also accepts:
+
+* `studytracker.db` — the database file itself (the desktop app's, or **Download .db** in
+  the browser edition), and
+* the exported CSVs — pick `nodes.csv` together with `sessions.csv`, `pct_history.csv`,
+  `status_history.csv` and `checklist.csv` in one go and everything comes back with them.
+  Files are recognised by their header, so `nodes (1).csv` works too. CSVs carry no
+  settings, so targets, presets and the backdrop are left as they are.
+
+A restore replaces everything currently in the app, so it shows what the file holds against
+what is there now and offers to save a copy of the current data first. Either the whole
+restore lands or none of it does — a failure part way leaves the database untouched.
+
+The desktop app also keeps seven daily copies of the database in `backups/`; the browser
+edition has no such folder, so the downloaded backup is the only copy there.
+
 ## Data model
 
 `nodes` — id, parent_id (null for subjects), name, depth, sort_order, est_effort,
@@ -152,7 +175,8 @@ inherited by everything beneath it.
   actual with an overrun flag (hours > estimate while < 80 %), velocity and naive
   weeks-to-100 forecast, session stats and hour-of-day heatmap.
 * **Settings** — storage folder, daily target, presets, cycle defaults, badge threshold,
-  default roll-up rule, skin, theme, sound, CSV mirror, xlsx export, CSV import with preview.
+  default roll-up rule, skin, theme, sound, CSV mirror, xlsx export, CSV merge with preview,
+  and **Backup & restore**.
 
 ## Skins
 

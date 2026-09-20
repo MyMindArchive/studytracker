@@ -85,6 +85,22 @@ export class SqlJsDriver implements SqlDriver {
     return new SqlJsDriver(db, true);
   }
 
+  /**
+   * Read-only-ish view of a database file the user handed us (a restore).
+   * It is never persisted: the bytes are inspected, copied out, and dropped.
+   */
+  static async openBytes(bytes: Uint8Array): Promise<SqlJsDriver> {
+    const SQL = await loadSqlJs();
+    let db: Database;
+    try {
+      db = new SQL.Database(bytes);
+      db.run("PRAGMA foreign_keys = ON");
+    } catch {
+      throw new Error("That file is not a SQLite database.");
+    }
+    return new SqlJsDriver(db, false);
+  }
+
   /** Throwaway in-memory database (tests). */
   static async openMemory(): Promise<SqlJsDriver> {
     const SQL = await loadSqlJs();

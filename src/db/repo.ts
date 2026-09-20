@@ -1,8 +1,10 @@
 import type { SqlDriver } from "./driver";
 import type { ChecklistItem, DbNode, MediaAsset, NodeStatus, PctHistory, RollupMode, Session, SessionSource, Settings, StatusHistory } from "../types";
-import { DEFAULT_SETTINGS, ROLLUP_MODES } from "../types";
+import { DEFAULT_SETTINGS, ROLLUP_MODES, SESSION_SOURCES } from "../types";
 import { SKIN_IDS } from "../lib/skins";
 import { uid, nowIso } from "../lib/ids";
+import type { BackupData } from "../lib/backup";
+import { orderNodesForInsert } from "../lib/backup";
 
 /* ------------------------------------------------------------------ nodes */
 
@@ -575,4 +577,147 @@ export async function saveSetting<K extends keyof Settings>(db: SqlDriver, key: 
     key,
     JSON.stringify(value),
   ]);
+}
+
+/* ----------------------------------------------------------- backup / restore */
+
+/** Everything in the database, in the shape a backup file stores. */
+export async function readAll(db: SqlDriver): Promise<BackupData> {
+  const [nodes, sessions, pct, status, checklist, settingRows] = await Promise.all([
+    listNodes(db),
+    listSessions(db),
+    listPctHistory(db),
+    listStatusHistory(db),
+    listChecklist(db),
+    db.select<{ key: string; value: string }>("SELECT key, value FROM settings"),
+  ]);
+  const settings: Record<string, unknown> = {};
+  for (const r of settingRows) {
+    try {
+      settings[r.key] = JSON.parse(r.value);
+    } catch {
+      settings[r.key] = r.value;
+    }
+  }
+  return { nodes, sessions, pct_history: pct, status_history: status, checklist, settings };
+}
+
+const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : fallback);
+const strOrNull = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : typeof v === "number" ? String(v) : null);
+const numOr = (v: unknown, d: number): number => (Number.isFinite(Number(v)) && v !== null && v !== "" ? Number(v) : d);
+const numOrNull = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/**
+ * Replaces the whole database with the contents of a backup, atomically: on
+ * any error nothing is written, so a half-restored file can never be what the
+ * user is left with. Rows are re-normalised on the way in because a backup may
+ * have been edited by hand between export and restore.
+ */
+export async function replaceAll(db: SqlDriver, data: BackupData): Promise<void> {
+  const ordered = orderNodesForInsert(
+    data.nodes
+      .filter((n) => n && typeof n === "object" && str((n as DbNode).id) !== "")
+      .map((n) => ({
+        ...n,
+        id: str(n.id),
+        parent_id: strOrNull(n.parent_id),
+        name: str(n.name, "(unnamed)"),
+        depth: 0, // recomputed below from the parent chain
+        sort_order: Math.round(numOr(n.sort_order, 0)),
+        est_effort: numOrNull(n.est_effort),
+        pct_complete: clampPct(numOr(n.pct_complete, 0)),
+        deadline: strOrNull(n.deadline),
+        planned_start: strOrNull(n.planned_start),
+        status: n.status === "blocked" ? "blocked" : null,
+        created_at: str(n.created_at) || nowIso(),
+        updated_at: str(n.updated_at) || str(n.created_at) || nowIso(),
+        weight: numOr(n.weight, 1),
+        rollup_mode: ROLLUP_MODES.includes(n.rollup_mode as RollupMode) ? (n.rollup_mode as RollupMode) : null,
+        unit: strOrNull(n.unit),
+        hours_per_unit: numOrNull(n.hours_per_unit),
+        weekly_target_hours: numOrNull(n.weekly_target_hours),
+        color: strOrNull(n.color),
+      })),
+  );
+  // Depth is derived, not trusted: the tree view orders by it, so a stale
+  // value from a hand-edited file would draw the tree wrong.
+  const depths = new Map<string, number>();
+  for (const n of ordered) {
+    const d = n.parent_id ? (depths.get(n.parent_id) ?? 0) + 1 : 0;
+    depths.set(n.id, d);
+    n.depth = d;
+  }
+  const known = new Set(ordered.map((n) => n.id));
+
+  const sessions = data.sessions
+    .filter((s) => s && str(s.id) !== "")
+    .map((s) => ({
+      ...s,
+      id: str(s.id),
+      node_id: s.node_id && known.has(s.node_id) ? s.node_id : null,
+      cycle_id: strOrNull(s.cycle_id),
+      mode: s.mode === "cycle" ? ("cycle" as const) : ("single" as const),
+      planned_seconds: Math.max(0, Math.round(numOr(s.planned_seconds, 0))),
+      actual_seconds: Math.max(0, Math.round(numOr(s.actual_seconds, 0))),
+      started_at: str(s.started_at) || nowIso(),
+      ended_at: str(s.ended_at) || str(s.started_at) || nowIso(),
+      ended_reason: (["completed", "aborted_credited", "aborted_discarded"] as string[]).includes(String(s.ended_reason))
+        ? s.ended_reason
+        : ("completed" as const),
+      note: strOrNull(s.note),
+      source: (SESSION_SOURCES as string[]).includes(String(s.source)) ? s.source : ("imported" as SessionSource),
+      tz_offset: numOrNull(s.tz_offset),
+    }));
+
+  const pct = data.pct_history.filter((r) => r && known.has(str(r.node_id)));
+  const status = data.status_history.filter((r) => r && known.has(str(r.node_id)));
+  const checklist = data.checklist.filter((r) => r && known.has(str(r.node_id)));
+
+  await db.transaction(async (tx) => {
+    // Children first so the foreign keys hold at every point in between.
+    for (const t of ["sessions", "pct_history", "status_history", "checklist_items", "nodes"]) {
+      await tx.execute(`DELETE FROM ${t}`);
+    }
+    for (const n of ordered) await tx.execute(NODE_INSERT_SQL, nodeValues(n));
+    for (const s of sessions) await tx.execute(SESSION_INSERT_SQL, sessionValues(s as Session));
+    for (const r of pct) {
+      await tx.execute("INSERT INTO pct_history (id,node_id,pct,changed_at) VALUES (?,?,?,?)", [
+        str(r.id) || uid(),
+        r.node_id,
+        clampPct(numOr(r.pct, 0)),
+        str(r.changed_at) || nowIso(),
+      ]);
+    }
+    for (const r of status) {
+      await tx.execute("INSERT INTO status_history (id,node_id,status,changed_at,note) VALUES (?,?,?,?,?)", [
+        str(r.id) || uid(),
+        r.node_id,
+        r.status === "blocked" ? "blocked" : null,
+        str(r.changed_at) || nowIso(),
+        strOrNull(r.note),
+      ]);
+    }
+    for (const r of checklist) {
+      await tx.execute("INSERT INTO checklist_items (id,node_id,label,done,sort_order,created_at) VALUES (?,?,?,?,?,?)", [
+        str(r.id) || uid(),
+        r.node_id,
+        str(r.label),
+        r.done ? 1 : 0,
+        Math.round(numOr(r.sort_order, 0)),
+        str(r.created_at) || nowIso(),
+      ]);
+    }
+    // A file with no settings section (the CSV mirror) has nothing to say
+    // about them, so the ones already here are kept rather than reset — which
+    // is what the restore dialog promises. Where the database lives belongs to
+    // this install, not to the backup, so it survives either way.
+    const entries = Object.entries(data.settings).filter(([k]) => k !== "storage_path");
+    if (entries.length) await tx.execute("DELETE FROM settings WHERE key <> 'storage_path'");
+    for (const [key, value] of entries) {
+      await tx.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
+        key,
+        JSON.stringify(value),
+      ]);
+    }
+  });
 }

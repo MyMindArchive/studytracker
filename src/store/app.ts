@@ -13,6 +13,7 @@ import { buildWorkbook, workbookBytes } from "../lib/xlsx";
 import { weeklySummary } from "../lib/stats";
 import { saveBytes } from "../platform";
 import type { ImportedNodeRow } from "../lib/csv";
+import { backupCounts, backupFilename, backupJson, buildBackup as makeBackup, type BackupCounts, type BackupData, type BackupFile } from "../lib/backup";
 import { uid, nowIso } from "../lib/ids";
 import { isTreeSortKey, type TreeSortKey } from "../lib/treeSort";
 
@@ -112,6 +113,12 @@ interface AppState {
   // export/import
   exportXlsx(): Promise<string | null>;
   importNodes(rows: ImportedNodeRow[]): Promise<{ created: number; updated: number }>;
+  /** Everything in one JSON file, as it stands right now. */
+  buildBackup(): Promise<BackupFile>;
+  /** Save that file: native save dialog in the desktop app, download in the browser. */
+  exportBackup(): Promise<string | null>;
+  /** Replace everything with the contents of a backup. Not undoable. */
+  restoreBackup(data: BackupData): Promise<BackupCounts>;
 
   // misc
   /** returns the toast id so the caller can dismiss it early */
@@ -472,6 +479,33 @@ export const useApp = create<AppState>((set, get) => {
       const bytes = workbookBytes(wb);
       const name = `studytracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
       return saveBytes(name, bytes, "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    },
+
+    async buildBackup() {
+      const db = requireDb();
+      return makeBackup(await repo.readAll(db), get().schemaVersion);
+    },
+
+    async exportBackup() {
+      const text = backupJson(await get().buildBackup());
+      return saveBytes(backupFilename(), new TextEncoder().encode(text), "json", "application/json");
+    },
+
+    async restoreBackup(data) {
+      const db = requireDb();
+      await repo.replaceAll(db, data);
+      // Everything the old rows were referenced by is gone with them: an undo
+      // entry that put a deleted task back would now be pointing at nothing.
+      set({ undoStack: [], selectedNodeId: null, subjectFilter: null });
+      await get().reload();
+      set((s) => ({ expanded: new Set(s.nodes.filter((n) => n.parent_id === null).map((n) => n.id)) }));
+      // A restore is the one write worth not losing to a closed tab.
+      if (db instanceof SqlJsDriver) await db.flush().catch(() => {});
+      const { settings, dbPath, nodes, sessions, history, checklist, statusHistory } = get();
+      if (settings.csv_mirror && isTauri() && dbPath) {
+        await writeMirror(dirname(dbPath), { nodes, sessions, history, checklist, statusHistory, rollupMode: settings.rollup_mode }).catch(() => {});
+      }
+      return backupCounts(data);
     },
 
     async importNodes(rows) {

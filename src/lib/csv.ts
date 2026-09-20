@@ -1,5 +1,5 @@
 import type { ChecklistItem, DbNode, PctHistory, RollupMode, Session, StatusHistory } from "../types";
-import { ROLLUP_MODES } from "../types";
+import { ROLLUP_MODES, SESSION_SOURCES } from "../types";
 import type { WeeklySummaryRow } from "./stats";
 
 export function csvEscape(v: unknown): string {
@@ -187,4 +187,125 @@ export function parseNodesCsv(text: string): ImportedNodeRow[] {
     color: get(r, "color"),
     sort_order: num(get(r, "sort_order")),
   }));
+}
+
+/* --------------------------------------------- typed rows for every table */
+
+/** Header-keyed view of a CSV. Keys are lower-cased; empty cells read as null. */
+export function csvRows(text: string): Record<string, string | null>[] {
+  const rows = parseCsv(text);
+  if (rows.length < 2) return [];
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  return rows.slice(1).map((r) => {
+    const o: Record<string, string | null> = {};
+    header.forEach((h, i) => {
+      const v = r[i]?.trim();
+      o[h] = v === undefined || v === "" ? null : v;
+    });
+    return o;
+  });
+}
+
+/** True when the text looks like a CSV whose header carries all of `required`. */
+export function csvHasColumns(text: string, required: string[]): boolean {
+  const first = parseCsv(text)[0];
+  if (!first) return false;
+  const header = new Set(first.map((h) => h.trim().toLowerCase()));
+  return required.every((c) => header.has(c));
+}
+
+const numOr = (v: string | null, d: number): number => (v !== null && Number.isFinite(Number(v)) ? Number(v) : d);
+const numOrNull = (v: string | null): number | null => (v !== null && Number.isFinite(Number(v)) ? Number(v) : null);
+const boolOf = (v: string | null): boolean => v !== null && v !== "0" && v.toLowerCase() !== "false" && v.toLowerCase() !== "no";
+const oneOf = <T extends string>(v: string | null, allowed: readonly T[], fallback: T): T =>
+  v !== null && (allowed as readonly string[]).includes(v.toLowerCase()) ? (v.toLowerCase() as T) : fallback;
+
+/**
+ * Full node rows, as written by `nodesCsv`. Unlike `parseNodesCsv` (which
+ * feeds the merge importer and deliberately leaves unknown fields alone) this
+ * fills every column, so a restore puts the tree back exactly as it was.
+ */
+export function parseNodesFullCsv(text: string, now = nowStamp()): DbNode[] {
+  return csvRows(text).map((r, i) => ({
+    id: r.id ?? `csv-node-${i}`,
+    parent_id: r.parent_id,
+    name: r.name ?? "(unnamed)",
+    depth: Math.max(0, Math.round(numOr(r.depth, 0))),
+    sort_order: Math.round(numOr(r.sort_order, i)),
+    est_effort: numOrNull(r.est_effort),
+    pct_complete: Math.min(100, Math.max(0, numOr(r.pct_complete, 0))),
+    deadline: r.deadline,
+    planned_start: r.planned_start,
+    status: r.status === "blocked" ? "blocked" : null,
+    created_at: r.created_at ?? now,
+    updated_at: r.updated_at ?? r.created_at ?? now,
+    weight: numOr(r.weight, 1),
+    rollup_mode: (ROLLUP_MODES as string[]).includes(String(r.rollup_mode).toLowerCase()) ? (String(r.rollup_mode).toLowerCase() as RollupMode) : null,
+    unit: r.unit,
+    hours_per_unit: numOrNull(r.hours_per_unit),
+    weekly_target_hours: numOrNull(r.weekly_target_hours),
+    color: r.color,
+  }));
+}
+
+export function parseSessionsCsv(text: string, now = nowStamp()): Session[] {
+  return csvRows(text).map((r, i) => {
+    const started = r.started_at ?? now;
+    return {
+      id: r.id ?? `csv-session-${i}`,
+      node_id: r.node_id,
+      cycle_id: r.cycle_id,
+      mode: oneOf(r.mode, ["single", "cycle"] as const, "single"),
+      planned_seconds: Math.max(0, Math.round(numOr(r.planned_seconds, 0))),
+      actual_seconds: Math.max(0, Math.round(numOr(r.actual_seconds, 0))),
+      started_at: started,
+      ended_at: r.ended_at ?? started,
+      ended_reason: oneOf(r.ended_reason, ["completed", "aborted_credited", "aborted_discarded"] as const, "completed"),
+      note: r.note,
+      // A row that came in from a file is an imported row, whatever the file
+      // called it — except that a genuine mirror export knows its own sources.
+      source: oneOf(r.source, SESSION_SOURCES, "imported"),
+      tz_offset: numOrNull(r.tz_offset),
+    };
+  });
+}
+
+export function parsePctHistoryCsv(text: string, now = nowStamp()): PctHistory[] {
+  return csvRows(text)
+    .filter((r) => r.node_id)
+    .map((r, i) => ({
+      id: r.id ?? `csv-pct-${i}`,
+      node_id: r.node_id as string,
+      pct: Math.min(100, Math.max(0, numOr(r.pct, 0))),
+      changed_at: r.changed_at ?? now,
+    }));
+}
+
+export function parseStatusHistoryCsv(text: string, now = nowStamp()): StatusHistory[] {
+  return csvRows(text)
+    .filter((r) => r.node_id)
+    .map((r, i) => ({
+      id: r.id ?? `csv-status-${i}`,
+      node_id: r.node_id as string,
+      status: r.status === "blocked" ? "blocked" : null,
+      changed_at: r.changed_at ?? now,
+      note: r.note,
+    }));
+}
+
+export function parseChecklistCsv(text: string, now = nowStamp()): ChecklistItem[] {
+  return csvRows(text)
+    .filter((r) => r.node_id)
+    .map((r, i) => ({
+      id: r.id ?? `csv-check-${i}`,
+      node_id: r.node_id as string,
+      label: r.label ?? "",
+      done: boolOf(r.done),
+      sort_order: Math.round(numOr(r.sort_order, i)),
+      created_at: r.created_at ?? now,
+    }));
+}
+
+function nowStamp(): string {
+  return new Date().toISOString();
 }
