@@ -103,6 +103,14 @@ Schema v4 added the provenance the analytics need: `sessions.source`
 'blocked' = waiting on something) and the `status_history` table behind it.
 Rows written before v4 carry source 'unknown' rather than a guess.
 
+Schema v5 added `nodes.priority`: an INTEGER rank (Low 10 … Emergency 50, spaced
+by ten so a level can be slipped in later without rewriting rows or breaking
+backups), NULL = none set. Integer rather than TEXT because the field exists to
+be ordered and a text column sorts 'emergency' < 'high' < 'low'. The CHECK
+guards the range 1-100, not the five exact values, so a file from a later
+version restores; a rank between two known levels displays as the lower one.
+Indexed partially (WHERE priority IS NOT NULL) — most rows never carry one.
+
 ### src/store/ — zustand state (the hub; read these two first)
 ```
 app.ts    (555)  useApp — db handle, nodes/sessions/history/checklist/settings,
@@ -135,10 +143,14 @@ stats.ts    dashboard maths: hoursToday, thisWeekBySubject, timeBySubject,
 time.ts     date-fns helpers; WEEK_STARTS_ON = 1 (Monday); day/week/month keys,
             fmtHours/fmtDuration/fmtClock, relativeDue (today / in 3d / 2d overdue),
             streak, listWeekStarts
-treeSort.ts TreeSortKey (manual | priority | due | progress | remaining | name),
-            sortSiblings (applied per sibling group, stable on manual order),
-            effectiveDeadlines (own date else earliest open descendant), priorityScore
-            (remaining effort / days until due)
+treeSort.ts TreeSortKey (manual | priority | urgency | due | progress | remaining
+            | name), sortSiblings (applied per sibling group, stable on manual
+            order), effectiveDeadlines (own date else earliest open descendant),
+            effectivePriorities (own rank else highest open below), urgencyScore
+            (remaining effort / days until due). "priority" is the rank you set;
+            "urgency" is the computed score that used to be called priority --
+            the stored sort key moved to studytracker.tree_sort.v2 so anyone who
+            had the old one selected keeps the sort they chose.
 csv.ts      csvEscape/toCsv, the column lists (NODE_COLUMNS, SESSION_COLUMNS, …),
             per-table csv writers, parseCsv + parseNodesCsv (merge import), and the
             full-fidelity readers used by a restore: csvRows/csvHasColumns,

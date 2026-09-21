@@ -9,7 +9,7 @@ import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
 import { LogTimeDialog } from "../time/LogTimeDialog";
 import type { DbNode } from "../../types";
-import { ROLLUP_MODES, SUBJECT_COLORS, type RollupMode } from "../../types";
+import { PRIORITY_LEVELS, priorityOfRank, ROLLUP_MODES, SUBJECT_COLORS, type RollupMode } from "../../types";
 import { computeRollup, subjectIndex, childrenOf, ROLLUP_HELP, ROLLUP_LABEL } from "../../lib/rollup";
 import { pctAsOf, creditedSessions } from "../../lib/stats";
 import { fmtDuration, fmtHours, fromIso, weekKey } from "../../lib/time";
@@ -185,6 +185,21 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
         </Field>
         <Field label="Planned start" hint="flags it on the dashboard if the day passes at 0 %">
           <input type="date" className="input w-full" value={node.planned_start ?? ""} onChange={(e) => patchNode(node.id, { planned_start: e.target.value || null })} />
+        </Field>
+        <Field label="Priority" hint={isLeaf ? "how much this matters" : "or leave it to the tasks below"}>
+          <select
+            className="input w-full"
+            value={node.priority ?? ""}
+            style={{ color: priorityOfRank(node.priority)?.color }}
+            onChange={(e) => patchNode(node.id, { priority: e.target.value === "" ? null : Number(e.target.value) })}
+          >
+            <option value="">None</option>
+            {[...PRIORITY_LEVELS].reverse().map((lvl) => (
+              <option key={lvl.id} value={lvl.rank}>
+                {lvl.label}
+              </option>
+            ))}
+          </select>
         </Field>
         {!isSubject && parentMode === "weight" && (
           <Field label="Weight" hint="share among siblings">

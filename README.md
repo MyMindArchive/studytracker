@@ -106,9 +106,22 @@ edition has no such folder, so the downloaded backup is the only copy there.
 ## Data model
 
 `nodes` — id, parent_id (null for subjects), name, depth, sort_order, est_effort,
-pct_complete (leaves only), deadline, created_at, updated_at, weight (share among
-siblings, default 1), rollup_mode (`equal`|`weight`|`effort`|null = inherit), and
-subject-only fields unit, hours_per_unit, weekly_target_hours, color.
+pct_complete (leaves only), deadline, planned_start, status, priority, created_at,
+updated_at, weight (share among siblings, default 1), rollup_mode
+(`equal`|`weight`|`effort`|null = inherit), and subject-only fields unit,
+hours_per_unit, weekly_target_hours, color.
+
+`nodes.priority` is an INTEGER rank, not a word: ordering is the whole point of the
+field, and a text column would sort `emergency` before `high` before `low`, so every
+query and comparator would need a lookup table to undo it. The five levels are Low 10,
+Medium 20, High 30, Urgent 40 and Emergency 50 — spaced by ten so a level can be slipped
+in later without rewriting every row or invalidating backups already on disk. The column
+`CHECK`s the range (1–100) rather than the five exact values, so a file written by a
+future version with more levels still restores; anything between two known levels reads
+as the lower one. NULL means nothing was said, which is not the same as Low. A partial
+index (`WHERE priority IS NOT NULL`) covers it, since most rows never carry one. The CSV
+mirror writes the word (`urgent`) for legibility and reads back either the word or the
+rank.
 
 `pct_history` — one row per leaf percent change (id, node_id, pct, changed_at).
 
@@ -154,7 +167,11 @@ inherited by everything beneath it.
   for add child / start timer / rename / duplicate / delete. A **Due** column shows each
   row's deadline relative to today (today / in 3d / 2d overdue; finished work is struck
   through); a parent without its own date shows, in italics, the earliest deadline among
-  its open tasks. The header's sort control orders every sibling group by priority
+  its open tasks. Each row can carry a **priority** — Low, Medium, High, Urgent or
+  Emergency — set from the detail panel or the row's right-click menu, and shown as a
+  coloured chip on the name; a group with no priority of its own shows, hollow, the
+  highest one still open beneath it. The header's sort control orders every sibling group
+  by priority (highest first, ties broken on the deadline, no priority last), urgency
   (remaining effort per day until due), due date, progress, remaining effort or name;
   manual order is the stored drag-and-drop order and the only mode where dragging is
   enabled. The numeric columns (%, Est. effort, Weight, Due) and the details pane are

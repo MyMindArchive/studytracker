@@ -263,6 +263,7 @@ describe("a hand-edited backup", () => {
       pct_complete: 0,
       deadline: null,
       planned_start: null,
+      priority: null,
       status: null,
       created_at: "2026-01-01T00:00:00.000Z",
       updated_at: "2026-01-01T00:00:00.000Z",

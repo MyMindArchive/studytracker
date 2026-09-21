@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DbNode } from "../types";
 import { childrenOf, computeRollup } from "../lib/rollup";
-import { effectiveDeadlines, priorityScore, sortSiblings } from "../lib/treeSort";
+import { effectiveDeadlines, effectivePriorities, sortSiblings, urgencyScore } from "../lib/treeSort";
 import { relativeDue } from "../lib/time";
 
 const TODAY = new Date(2026, 8, 18); // 2026-09-18 local
@@ -16,6 +16,7 @@ function node(p: Partial<DbNode> & { id: string; name: string }): DbNode {
     deadline: null,
     planned_start: null,
     status: null,
+    priority: null,
     created_at: "2026-09-01T00:00:00.000Z",
     updated_at: "2026-09-01T00:00:00.000Z",
     weight: 1,
@@ -44,7 +45,8 @@ const nodes: DbNode[] = [
 const kids = childrenOf(nodes);
 const rollup = computeRollup(nodes, "equal");
 const deadlines = effectiveDeadlines(kids);
-const ctx = { rollup, deadlines, today: TODAY };
+const priorities = effectivePriorities(kids);
+const ctx = { rollup, deadlines, priorities, today: TODAY };
 const names = (arr: DbNode[]) => arr.map((n) => n.name);
 
 describe("effectiveDeadlines", () => {
@@ -64,7 +66,7 @@ describe("effectiveDeadlines", () => {
     expect(d.get("c1")).toBeUndefined();
     expect(d.get("econ")).toEqual({ date: "2026-09-19", inherited: true });
     // due sort puts finished chapters last
-    const ctx2 = { rollup: r, deadlines: d, today: TODAY };
+    const ctx2 = { rollup: r, deadlines: d, priorities: effectivePriorities(k), today: TODAY };
     expect(names(sortSiblings(k.get("econ")!, "due", ctx2))).toEqual(["Chapter 2", "Chapter 3", "Chapter 1"]);
   });
 });
@@ -90,13 +92,56 @@ describe("sortSiblings", () => {
     expect(names(sortSiblings(chapters, "name", ctx))).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
   });
 
-  it("ranks by priority: remaining effort per day until due", () => {
+  it("ranks by urgency: remaining effort per day until due", () => {
     // c2, c3: 1h left, due tomorrow -> 1/2 per day. c1: 0.33h left, due today -> 0.33/1.
-    expect(priorityScore(nodes[1], ctx)).toBeCloseTo(0.5);
-    expect(priorityScore(nodes[3], ctx)).toBeCloseTo(0.33);
-    expect(names(sortSiblings(chapters, "priority", ctx))).toEqual(["Chapter 2", "Chapter 3", "Chapter 1"]);
+    expect(urgencyScore(nodes[1], ctx)).toBeCloseTo(0.5);
+    expect(urgencyScore(nodes[3], ctx)).toBeCloseTo(0.33);
+    expect(names(sortSiblings(chapters, "urgency", ctx))).toEqual(["Chapter 2", "Chapter 3", "Chapter 1"]);
     // nothing to do and no deadline -> 0
-    expect(priorityScore(nodes[5], ctx)).toBe(0);
+    expect(urgencyScore(nodes[5], ctx)).toBe(0);
+  });
+});
+
+describe("priority", () => {
+  // Chapter 3 is set High by hand; Chapter 1 only inherits Emergency from its task.
+  const withPriority = nodes.map((n) =>
+    n.id === "c3" ? { ...n, priority: 30 } : n.id === "c1a" ? { ...n, priority: 50 } : n,
+  );
+  const k = childrenOf(withPriority);
+  const r = computeRollup(withPriority, "equal");
+  const p = effectivePriorities(k);
+  const c = { rollup: r, deadlines: effectiveDeadlines(k), priorities: p, today: TODAY };
+
+  it("takes the node's own rank, else the highest still open below it", () => {
+    expect(p.get("c3")).toEqual({ rank: 30, inherited: false });
+    expect(p.get("c1a")).toEqual({ rank: 50, inherited: false });
+    expect(p.get("c1")).toEqual({ rank: 50, inherited: true });
+    expect(p.get("econ")).toEqual({ rank: 50, inherited: true });
+    // nothing set anywhere below it
+    expect(p.get("c2")).toBeUndefined();
+  });
+
+  it("does not lift a finished task's priority to its parent", () => {
+    const done = withPriority.map((n) => (n.id === "c1a" ? { ...n, pct_complete: 100 } : n));
+    const kd = childrenOf(done);
+    const rd = computeRollup(done, "equal");
+    const pd = effectivePriorities(kd, (id) => (rd.get(id)?.pct ?? 0) >= 100);
+    expect(pd.get("c1a")).toEqual({ rank: 50, inherited: false });
+    expect(pd.get("c1")).toBeUndefined();
+    expect(pd.get("econ")).toEqual({ rank: 30, inherited: true });
+  });
+
+  it("sorts highest first and puts nodes with no priority last", () => {
+    expect(names(sortSiblings(k.get("econ")!, "priority", c))).toEqual(["Chapter 1", "Chapter 3", "Chapter 2"]);
+  });
+
+  it("breaks ties on the deadline rather than leaving them in storage order", () => {
+    // Both chapters High; c1 is due today (inherited), c2 tomorrow.
+    const tied = nodes.map((n) => (n.id === "c1" || n.id === "c2" ? { ...n, priority: 30 } : n));
+    const kt = childrenOf(tied);
+    const rt = computeRollup(tied, "equal");
+    const ct = { rollup: rt, deadlines: effectiveDeadlines(kt), priorities: effectivePriorities(kt), today: TODAY };
+    expect(names(sortSiblings(kt.get("econ")!, "priority", ct))).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
   });
 });
 

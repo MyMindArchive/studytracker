@@ -17,6 +17,84 @@ export const ROLLUP_MODES: RollupMode[] = ["equal", "weight", "effort"];
  */
 export type NodeStatus = "blocked";
 
+/**
+ * How much this matters, set by hand. Deliberately stored as a number rather
+ * than a word: the whole point of the field is ordering, and an integer orders
+ * itself — 'emergency' < 'high' < 'low' is what a text column would give you,
+ * so every query and every comparator would need a lookup table to undo it.
+ *
+ * The ranks are spaced by ten so a level can be slipped in between later
+ * (a 35 between High and Urgent) without rewriting every row — and without
+ * invalidating backups and CSV exports already sitting in someone's folder.
+ * NULL means nothing was said, which is not the same as "low".
+ */
+export type Priority = "low" | "medium" | "high" | "urgent" | "emergency";
+
+export interface PriorityLevel {
+  id: Priority;
+  /** stored value; higher is more important */
+  rank: number;
+  label: string;
+  /** single letter for the tree chip, where there is no room for a word */
+  short: string;
+  color: string;
+}
+
+/** Ordered least to most important. */
+export const PRIORITY_LEVELS: PriorityLevel[] = [
+  { id: "low", rank: 10, label: "Low", short: "L", color: "#64748b" },
+  { id: "medium", rank: 20, label: "Medium", short: "M", color: "#0ea5e9" },
+  { id: "high", rank: 30, label: "High", short: "H", color: "#f59e0b" },
+  { id: "urgent", rank: 40, label: "Urgent", short: "U", color: "#f97316" },
+  { id: "emergency", rank: 50, label: "Emergency", short: "E", color: "#ef4444" },
+];
+
+export const PRIORITIES: Priority[] = PRIORITY_LEVELS.map((p) => p.id);
+
+/** Lowest and highest stored ranks the CHECK constraint will accept. */
+export const PRIORITY_MIN_RANK = 1;
+export const PRIORITY_MAX_RANK = 100;
+
+const BY_ID = new Map(PRIORITY_LEVELS.map((p) => [p.id, p]));
+
+export function priorityRank(id: Priority | null | undefined): number | null {
+  return id ? (BY_ID.get(id)?.rank ?? null) : null;
+}
+
+/**
+ * The level a stored rank displays as. Anything in between two levels reads as
+ * the lower of the two, so a hand-edited CSV or a file written by a later
+ * version that knows more levels still shows something sensible instead of
+ * dropping the value on the floor.
+ */
+export function priorityOfRank(rank: number | null | undefined): PriorityLevel | null {
+  if (rank === null || rank === undefined || !Number.isFinite(Number(rank))) return null;
+  const n = Number(rank);
+  let out: PriorityLevel | null = null;
+  for (const lvl of PRIORITY_LEVELS) {
+    if (n >= lvl.rank) out = lvl;
+  }
+  return out ?? PRIORITY_LEVELS[0];
+}
+
+/** Clamp an arbitrary number into the range the column accepts; null passes through. */
+export function clampPriority(rank: number | null | undefined): number | null {
+  if (rank === null || rank === undefined || rank === ("" as unknown)) return null;
+  const n = Number(rank);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(PRIORITY_MIN_RANK, Math.min(PRIORITY_MAX_RANK, Math.round(n)));
+}
+
+/** Accepts a level name ("high") or a rank ("30"); anything else is null. */
+export function parsePriority(v: string | number | null | undefined): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number") return clampPriority(v);
+  const s = String(v).trim().toLowerCase();
+  const byName = BY_ID.get(s as Priority);
+  if (byName) return byName.rank;
+  return clampPriority(Number(s));
+}
+
 export interface DbNode {
   id: string;
   parent_id: string | null;
@@ -30,6 +108,8 @@ export interface DbNode {
   planned_start: string | null;
   /** null = derive from pct_complete; "blocked" = waiting on something */
   status: NodeStatus | null;
+  /** stored priority rank (see PRIORITY_LEVELS); null = none set */
+  priority: number | null;
   created_at: string;
   updated_at: string;
   /** share among siblings, used when the parent rolls up by weight */

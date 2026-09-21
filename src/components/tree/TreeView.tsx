@@ -10,7 +10,7 @@ import { Modal } from "../ui/Modal";
 import { fmtHours } from "../../lib/time";
 import { creditedSessions } from "../../lib/stats";
 import { ROLLUP_LABEL } from "../../lib/rollup";
-import { effectiveDeadlines, sortSiblings, TREE_SORT_OPTIONS, type EffectiveDeadline } from "../../lib/treeSort";
+import { effectiveDeadlines, effectivePriorities, sortSiblings, TREE_SORT_OPTIONS, type EffectiveDeadline, type EffectivePriority } from "../../lib/treeSort";
 import { cn } from "../../lib/cn";
 
 export interface FlatRow {
@@ -111,10 +111,11 @@ export function TreeView() {
   const kids = useMemo(() => childrenOf(nodes), [nodes]);
   const subjects = kids.get(null) ?? [];
   const deadlines = useMemo(() => effectiveDeadlines(kids, (id) => (rollup.get(id)?.pct ?? 0) >= 100), [kids, rollup]);
+  const priorities = useMemo(() => effectivePriorities(kids, (id) => (rollup.get(id)?.pct ?? 0) >= 100), [kids, rollup]);
   const todayMs = startOfDay(new Date()).getTime();
 
   const rows = useMemo(() => {
-    const ctx = { rollup, deadlines, today: new Date(todayMs) };
+    const ctx = { rollup, deadlines, priorities, today: new Date(todayMs) };
     const out: FlatRow[] = [];
     const walk = (parent: string | null) => {
       for (const n of sortSiblings(kids.get(parent) ?? [], treeSort, ctx)) {
@@ -127,7 +128,7 @@ export function TreeView() {
     };
     walk(null);
     return out;
-  }, [kids, expanded, subjectFilter, treeSort, rollup, deadlines, todayMs]);
+  }, [kids, expanded, subjectFilter, treeSort, rollup, deadlines, priorities, todayMs]);
 
   /**
    * Weight only means something to a child whose parent rolls up by weight, so
@@ -319,6 +320,7 @@ export function TreeView() {
                   row={r}
                   siblings={kids.get(r.node.parent_id) ?? []}
                   due={deadlines.get(r.node.id) as EffectiveDeadline | undefined}
+                  priority={priorities.get(r.node.id) as EffectivePriority | undefined}
                   today={todayMs}
                   manual={manual}
                   showWeight={showWeight}

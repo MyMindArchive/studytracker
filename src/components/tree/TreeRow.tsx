@@ -7,9 +7,10 @@ import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
 import { cn } from "../../lib/cn";
 import type { DbNode } from "../../types";
+import { PRIORITY_LEVELS, priorityOfRank } from "../../types";
 import type { FlatRow } from "./TreeView";
 import { subjectIndex, weightOf, ROLLUP_LABEL } from "../../lib/rollup";
-import type { EffectiveDeadline } from "../../lib/treeSort";
+import type { EffectiveDeadline, EffectivePriority } from "../../lib/treeSort";
 import { relativeDue } from "../../lib/time";
 
 type DropZone = "before" | "after" | "inside" | null;
@@ -22,6 +23,7 @@ export function TreeRow({
   row,
   siblings,
   due,
+  priority,
   today,
   manual,
   showWeight,
@@ -31,6 +33,8 @@ export function TreeRow({
   siblings: DbNode[];
   /** own deadline, or the earliest one below (inherited) */
   due?: EffectiveDeadline;
+  /** own priority, or the highest still open below (inherited) */
+  priority?: EffectivePriority;
   /** start of today, ms — passed in so every row agrees on the date */
   today: number;
   /** true when the tree is in manual order; drag & drop is only allowed then */
@@ -208,6 +212,7 @@ export function TreeRow({
                 {node.name}
               </span>
             )}
+            {priority && <PriorityChip priority={priority} />}
             {fromChecklist && (
               <span className="chip ml-1.5 inline-flex shrink-0 items-center gap-0.5" title="Checklist items done">
                 <CheckSquare size={10} /> {checklist!.done}/{checklist!.total}
@@ -352,6 +357,29 @@ export function TreeRow({
           <Item onSelect={startTimerHere}>Start timer here</Item>
           <Item onSelect={() => setEditingName(true)}>Rename</Item>
           <Item onSelect={() => duplicateNode(node.id)}>Duplicate</Item>
+          <ContextMenu.Sub>
+            <ContextMenu.SubTrigger className="menu-item flex items-center justify-between gap-4">
+              Priority
+              <ChevronRight size={12} />
+            </ContextMenu.SubTrigger>
+            <ContextMenu.Portal>
+              <ContextMenu.SubContent className="menu z-50" sideOffset={2}>
+                {[...PRIORITY_LEVELS].reverse().map((lvl) => (
+                  <ContextMenu.Item
+                    key={lvl.id}
+                    className="menu-item flex items-center gap-2"
+                    onSelect={() => patchNode(node.id, { priority: node.priority === lvl.rank ? null : lvl.rank })}
+                  >
+                    <span className="dot h-2 w-2 shrink-0" style={{ background: lvl.color }} />
+                    {lvl.label}
+                    {node.priority === lvl.rank && <span className="ml-auto text-muted">✓</span>}
+                  </ContextMenu.Item>
+                ))}
+                <ContextMenu.Separator className="menu-sep" />
+                <Item onSelect={() => patchNode(node.id, { priority: null })}>None</Item>
+              </ContextMenu.SubContent>
+            </ContextMenu.Portal>
+          </ContextMenu.Sub>
           <ContextMenu.Separator className="menu-sep" />
           <Item danger onSelect={() => onDelete(node)}>
             Delete…
@@ -359,6 +387,31 @@ export function TreeRow({
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
+  );
+}
+
+/**
+ * Priority reads as a small coloured chip on the name rather than a column of
+ * its own: the tree is already six columns wide and most rows never carry one.
+ * An inherited chip (the highest still open underneath a group) is drawn
+ * hollow, the same distinction the Due column makes with italics.
+ */
+function PriorityChip({ priority }: { priority: EffectivePriority }) {
+  const lvl = priorityOfRank(priority.rank);
+  if (!lvl) return null;
+  const title = priority.inherited ? `Highest priority among the open tasks below: ${lvl.label}` : `Priority: ${lvl.label}`;
+  return (
+    <span
+      className="chip ml-1.5 shrink-0 font-medium"
+      title={title}
+      style={
+        priority.inherited
+          ? { color: lvl.color, borderColor: lvl.color, background: "transparent" }
+          : { color: "#fff", borderColor: lvl.color, background: lvl.color }
+      }
+    >
+      {lvl.short}
+    </span>
   );
 }
 

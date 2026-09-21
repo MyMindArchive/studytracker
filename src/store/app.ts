@@ -28,11 +28,21 @@ export interface Toast {
 
 type UndoEntry = { label: string; run: () => Promise<void> };
 
-const TREE_SORT_KEY = "studytracker.tree_sort";
+/**
+ * v2 of the key: "priority" used to mean the computed effort-per-day score,
+ * which is now called "urgency", and the name went to the priority you set by
+ * hand. Reading the old key through that rename keeps whoever had it selected
+ * on the sort they actually chose instead of silently swapping it for another.
+ */
+const TREE_SORT_KEY = "studytracker.tree_sort.v2";
+const TREE_SORT_KEY_V1 = "studytracker.tree_sort";
 function loadTreeSort(): TreeSortKey {
   try {
     const v = localStorage.getItem(TREE_SORT_KEY);
-    return isTreeSortKey(v) ? v : "manual";
+    if (isTreeSortKey(v)) return v;
+    const old = localStorage.getItem(TREE_SORT_KEY_V1);
+    if (old === "priority") return "urgency";
+    return isTreeSortKey(old) ? old : "manual";
   } catch {
     return "manual";
   }
@@ -560,6 +570,10 @@ export const useApp = create<AppState>((set, get) => {
               sets.push("planned_start = ?");
               vals.push(r.planned_start);
             }
+            if (r.priority !== null) {
+              sets.push("priority = ?");
+              vals.push(r.priority);
+            }
             if (r.weight !== null) {
               sets.push("weight = ?");
               vals.push(r.weight);
@@ -600,6 +614,7 @@ export const useApp = create<AppState>((set, get) => {
                 deadline: r.deadline,
                 planned_start: r.planned_start,
                 status: null,
+                priority: r.priority,
                 created_at: ts,
                 updated_at: ts,
                 weight: r.weight ?? 1,

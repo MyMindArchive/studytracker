@@ -5,7 +5,7 @@ import { createNode, setPct, listPctHistory, insertSession, listSessions, listNo
 import { computeRollup, rootTotals } from "../lib/rollup";
 import { weeklySummary, thisWeekBySubject, hoursBySubjectForWeek, sessionStats, plannedVsActual, velocity, agingWip, estimateBias, reworkRate, quantile, IDLE_DAYS } from "../lib/stats";
 import { uid } from "../lib/ids";
-import { parseCsv, nodesCsv, parseNodesCsv } from "../lib/csv";
+import { parseCsv, nodesCsv, parseNodesCsv, parseNodesFullCsv } from "../lib/csv";
 import { buildWorkbook } from "../lib/xlsx";
 import * as XLSX from "xlsx";
 import { weekKey } from "../lib/time";
@@ -123,8 +123,8 @@ describe("roll-up", () => {
     expect((await listChecklist(db)).filter((i) => i.node_id === ch.id).length).toBe(2);
   });
 
-  it("schema v4 adds weight, rollup_mode, checklist_items, status and planned_start with sane defaults", async () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+  it("schema v5 adds weight, rollup_mode, checklist_items, status, planned_start and priority with sane defaults", async () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(5);
     const s = await createNode(db, { parent_id: null, name: "S" });
     const [row] = await listNodes(db);
     expect(row.id).toBe(s.id);
@@ -132,6 +132,24 @@ describe("roll-up", () => {
     expect(row.rollup_mode).toBeNull();
     expect(row.status).toBeNull();
     expect(row.planned_start).toBeNull();
+    // A priority is something you say, not something every task starts with.
+    expect(row.priority).toBeNull();
+  });
+
+  it("stores priority as a rank, keeps it out of range of the CHECK, and round-trips the name through CSV", async () => {
+    const s = await createNode(db, { parent_id: null, name: "P" });
+    const leaf = await createNode(db, { parent_id: s.id, name: "Urgent thing", priority: 40 });
+    expect((await listNodes(db)).find((n) => n.id === leaf.id)!.priority).toBe(40);
+    // Out-of-range input is clamped on the way in rather than hitting the CHECK.
+    const wild = await createNode(db, { parent_id: s.id, name: "Wild", priority: 9999 });
+    expect(wild.priority).toBe(100);
+    // The mirror writes the word; parsing takes the word or the rank back.
+    const csv = nodesCsv(await listNodes(db));
+    expect(csv.split("\r\n")[0].split(",")).toContain("priority");
+    expect(csv).toContain("urgent");
+    const back = parseNodesFullCsv(csv);
+    expect(back.find((n) => n.id === leaf.id)!.priority).toBe(40);
+    expect(parseNodesFullCsv(csv.replace("urgent", "30")).find((n) => n.id === leaf.id)!.priority).toBe(30);
   });
 
   it("editing a leaf 20 -> 40 adds one pct_history row and changes the roll-up immediately", async () => {

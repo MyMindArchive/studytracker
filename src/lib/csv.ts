@@ -1,5 +1,5 @@
 import type { ChecklistItem, DbNode, PctHistory, RollupMode, Session, StatusHistory } from "../types";
-import { ROLLUP_MODES, SESSION_SOURCES } from "../types";
+import { parsePriority, priorityOfRank, ROLLUP_MODES, SESSION_SOURCES } from "../types";
 import type { WeeklySummaryRow } from "./stats";
 
 export function csvEscape(v: unknown): string {
@@ -26,6 +26,7 @@ export const NODE_COLUMNS: (keyof DbNode & string)[] = [
   "deadline",
   "planned_start",
   "status",
+  "priority",
   "created_at",
   "updated_at",
   "weight",
@@ -62,8 +63,15 @@ export const WEEKLY_COLUMNS: (keyof WeeklySummaryRow & string)[] = [
   "pct_change",
 ];
 
+/**
+ * The mirror is meant to be opened in a spreadsheet, so priority goes out as
+ * the word rather than the rank — "urgent" says something, 40 does not. It
+ * reads back either way (see `parsePriority`), so a file edited by hand with
+ * a name, a rank, or a blank still restores.
+ */
 export function nodesCsv(nodes: DbNode[]): string {
-  return toCsv(nodes as unknown as Record<string, unknown>[], NODE_COLUMNS);
+  const rows = nodes.map((n) => ({ ...n, priority: priorityOfRank(n.priority)?.id ?? null }));
+  return toCsv(rows as unknown as Record<string, unknown>[], NODE_COLUMNS);
 }
 export function sessionsCsv(sessions: Session[]): string {
   return toCsv(sessions as unknown as Record<string, unknown>[], SESSION_COLUMNS);
@@ -149,6 +157,7 @@ export interface ImportedNodeRow {
   pct_complete: number | null;
   deadline: string | null;
   planned_start: string | null;
+  priority: number | null;
   weight: number | null;
   rollup_mode: RollupMode | null;
   unit: string | null;
@@ -179,6 +188,7 @@ export function parseNodesCsv(text: string): ImportedNodeRow[] {
     pct_complete: num(get(r, "pct_complete")),
     deadline: get(r, "deadline"),
     planned_start: get(r, "planned_start"),
+    priority: parsePriority(get(r, "priority")),
     weight: num(get(r, "weight")),
     rollup_mode: mode(get(r, "rollup_mode")),
     unit: get(r, "unit"),
@@ -237,6 +247,7 @@ export function parseNodesFullCsv(text: string, now = nowStamp()): DbNode[] {
     deadline: r.deadline,
     planned_start: r.planned_start,
     status: r.status === "blocked" ? "blocked" : null,
+    priority: parsePriority(r.priority),
     created_at: r.created_at ?? now,
     updated_at: r.updated_at ?? r.created_at ?? now,
     weight: numOr(r.weight, 1),

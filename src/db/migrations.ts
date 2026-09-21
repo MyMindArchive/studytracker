@@ -109,6 +109,22 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_status_history_node ON status_history(node_id, changed_at)`,
     ],
   },
+  {
+    version: 5,
+    statements: [
+      // How much a node matters, set by hand: an integer rank rather than a
+      // word, because ordering is the entire point of the field and a TEXT
+      // column would sort 'emergency' before 'high' before 'low'. The app
+      // writes the five ranks in PRIORITY_LEVELS (10/20/30/40/50, spaced so a
+      // level can be slipped in later); the CHECK only guards the range, so a
+      // backup written by a future version with more levels still restores.
+      // NULL is "nothing said", which is deliberately not the same as low.
+      `ALTER TABLE nodes ADD COLUMN priority INTEGER NULL CHECK (priority IS NULL OR (priority >= 1 AND priority <= 100))`,
+      // Partial: most nodes never get a priority, and the ones that do are the
+      // only ones any "show me what matters" query has to look at.
+      `CREATE INDEX IF NOT EXISTS idx_nodes_priority ON nodes(priority DESC) WHERE priority IS NOT NULL`,
+    ],
+  },
 ];
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
