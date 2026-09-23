@@ -3,7 +3,7 @@ import { Play, Trash2, Plus, CheckSquare, CalendarPlus, PauseOctagon } from "luc
 import { addWeeks } from "date-fns";
 import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
-import { Field, NumberInput } from "../ui/Field";
+import { Field, InfoTip, NumberInput } from "../ui/Field";
 import { Sparkline } from "../ui/Sparkline";
 import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
@@ -12,7 +12,7 @@ import type { DbNode } from "../../types";
 import { PRIORITY_LEVELS, priorityOfRank, ROLLUP_MODES, SUBJECT_COLORS, type RollupMode } from "../../types";
 import { computeRollup, subjectIndex, childrenOf, ROLLUP_HELP, ROLLUP_LABEL } from "../../lib/rollup";
 import { pctAsOf, creditedSessions } from "../../lib/stats";
-import { fmtDuration, fmtHours, fromIso, weekKey } from "../../lib/time";
+import { fmtDuration, fmtHours, fmtKeyShort, fromIso, weekKey } from "../../lib/time";
 import { cn } from "../../lib/cn";
 
 const UNITS = ["hours", "pages", "problems", "chapters"];
@@ -153,40 +153,55 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
             {fmtEff(roll.doneTotal)} / {fmtEff(roll.estTotal)} {subject?.unit ?? "hours"}
           </span>
         </div>
-        <ProgressBar pct={roll.pct} color={color} className="mt-2" />
+        {/* A typed leaf's slider already draws the bar, so it replaces it rather than sitting under it. */}
+        {!(isLeaf && !fromChecklist) && <ProgressBar pct={roll.pct} color={color} className="mt-2" />}
         {isLeaf && !fromChecklist && (
-          <div className="mt-3 flex items-center gap-3">
-            <RangeSlider value={Math.round(node.pct_complete)} onCommit={(v) => setPct(node.id, v)} className="flex-1" style={{ accentColor: color ?? "var(--accent)" }} ariaLabel="Percent complete" />
+          <div className="mt-2 flex items-center gap-3">
+            <RangeSlider value={Math.round(node.pct_complete)} onCommit={(v) => setPct(node.id, v)} className="range-thumb flex-1" color={color} ariaLabel="Percent complete" />
             <NumberInput value={Math.round(node.pct_complete)} min={0} max={100} step={1} className="input w-20 text-right" onChange={(v) => setPct(node.id, Math.max(0, Math.min(100, v ?? 0)))} />
             <span className="text-sm text-muted">%</span>
           </div>
         )}
         {isLeaf && fromChecklist && (
           <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-            <CheckSquare size={12} /> Set by the checklist: {itemsDone} of {items.length} done. Remove all items to type a percent again.
+            <CheckSquare size={12} /> Set by the checklist: {itemsDone} of {items.length} done
+            <InfoTip text="Remove all checklist items to type a percent again." />
           </p>
         )}
         {!isLeaf && (
-          <p className="mt-2 text-xs text-muted">
+          <p className="mt-2 flex items-center gap-1 text-xs text-muted">
             <span className="font-medium text-fg">{ROLLUP_LABEL[roll.mode]}</span>
-            {node.rollup_mode ? "" : " (inherited)"} · {ROLLUP_HELP[roll.mode]}
+            {node.rollup_mode ? "" : " (inherited)"}
+            <InfoTip text={ROLLUP_HELP[roll.mode]} />
           </p>
         )}
       </div>
 
+      <div className="flex gap-2">
+        <button className="btn btn-primary flex-1" onClick={startTimer}>
+          <Play size={14} /> Start timer
+        </button>
+        <button className="btn" onClick={() => addChild(node.id)} title="Add child (N)">
+          <Plus size={14} /> Child
+        </button>
+        <button className="btn btn-danger" onClick={() => onDelete(node)} title="Delete">
+          <Trash2 size={14} />
+        </button>
+      </div>
+
       <div className="card grid grid-cols-2 gap-x-4">
         {isLeaf && (
-          <Field label="Estimated effort" hint={subject?.unit ?? "hours"}>
+          <Field label="Estimate" hint={subject?.unit ?? "hours"} help="Effort you expect this task to take; the tree and the dashboard compare logged time against it.">
             <NumberInput value={node.est_effort} allowNull min={0} className="input w-full" onChange={(v) => patchNode(node.id, { est_effort: v })} />
           </Field>
         )}
-        <Field label="Deadline" hint="shown in the Due column and used for sorting">
+        <Field label="Deadline" help="Shown in the Due column and used for sorting.">
           <input type="date" className="input w-full" value={node.deadline ?? ""} onChange={(e) => patchNode(node.id, { deadline: e.target.value || null })} />
         </Field>
-        <Field label="Planned start" hint="flags it on the dashboard if the day passes at 0 %">
+        <Field label="Planned start" help="The dashboard flags it if this day passes while it is still at 0 %.">
           <input type="date" className="input w-full" value={node.planned_start ?? ""} onChange={(e) => patchNode(node.id, { planned_start: e.target.value || null })} />
         </Field>
-        <Field label="Priority" hint={isLeaf ? "how much this matters" : "or leave it to the tasks below"}>
+        <Field label="Priority" help={isLeaf ? "How much this matters. Sort the tree by priority to bring it up." : "Set one here, or leave it to the tasks below: the highest open one shows on this row."}>
           <select
             className="input w-full"
             value={node.priority ?? ""}
@@ -202,12 +217,12 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
           </select>
         </Field>
         {!isSubject && parentMode === "weight" && (
-          <Field label="Weight" hint="share among siblings">
+          <Field label="Weight" help="Share among siblings: 2 counts twice, 0 leaves it out.">
             <NumberInput value={node.weight ?? 1} min={0} step={0.5} className="input w-full" onChange={(v) => patchNode(node.id, { weight: Math.max(0, v ?? 1) })} />
           </Field>
         )}
         {!isLeaf && (
-          <Field label="Roll-up" hint="how children combine" className="col-span-2">
+          <Field label="Roll-up" help="How the children's percents combine into this one." className="col-span-2">
             <select
               className="input w-full"
               value={node.rollup_mode ?? ""}
@@ -241,7 +256,7 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
                 ))}
               </datalist>
             </Field>
-            <Field label="Hours per unit" hint="conversion">
+            <Field label="Hours per unit" help="Converts this project's unit into hours so it can be compared with the others.">
               <NumberInput value={node.hours_per_unit} allowNull min={0} className="input w-full" placeholder={(node.unit ?? "hours") === "hours" ? "1" : "–"} onChange={(v) => patchNode(node.id, { hours_per_unit: v })} />
             </Field>
             <Field label="Weekly target" hint="hours">
@@ -267,8 +282,11 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
       {isLeaf && (
         <div className="card">
           <div className="mb-2 flex items-baseline justify-between">
-            <span className="section-title">Checklist</span>
-            <span className="text-xs text-muted">{items.length ? `${itemsDone} / ${items.length} · each item ${(100 / items.length).toFixed(0)} %` : "optional"}</span>
+            <span className="flex items-center gap-1">
+              <span className="section-title">Checklist</span>
+              <InfoTip text="Optional. Items count equally: ticking 2 of 3 sets this task to 67 %." />
+            </span>
+            {items.length > 0 && <span className="text-xs text-muted">{itemsDone} / {items.length}</span>}
           </div>
           {items.length > 0 && (
             <ul className="flex flex-col">
@@ -315,7 +333,6 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
               <Plus size={12} /> Add
             </button>
           </form>
-          {items.length === 0 && <p className="mt-2 text-xs text-muted">Items count equally: ticking 2 of 3 sets this task to 67 %.</p>}
         </div>
       )}
 
@@ -323,7 +340,12 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
         <div className="card">
           <div className="mb-2 flex items-baseline justify-between">
             <span className="section-title">Children</span>
-            <span className="text-xs text-muted">{ROLLUP_LABEL[roll.mode]}</span>
+            <span className="flex items-center gap-1 text-xs text-muted">
+              {ROLLUP_LABEL[roll.mode]}
+              <InfoTip
+                text={byWeight ? "A child with weight 2 counts twice; 0 leaves it out." : `Every child counts the same. Switch Roll-up to ${ROLLUP_LABEL.weight} to give them individual shares.`}
+              />
+            </span>
           </div>
           <div className={cn("table-head grid gap-2 pb-1", byWeight ? "grid-cols-[1fr_52px_64px]" : "grid-cols-[1fr_52px]")}>
             <span>Task</span>
@@ -352,17 +374,15 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
               );
             })}
           </ul>
-          <p className="mt-2 text-xs text-muted">
-            {byWeight
-              ? "A child with weight 2 counts twice; 0 leaves it out."
-              : `Every child counts the same. Switch Roll-up to ${ROLLUP_LABEL.weight} to give them individual shares.`}
-          </p>
         </div>
       )}
 
       <div className="card">
         <div className="mb-2 flex items-baseline justify-between">
-          <span className="section-title">Waiting on something?</span>
+          <span className="flex items-center gap-1">
+            <span className="section-title">Waiting on something?</span>
+            <InfoTip text="Blocked work is waiting on something outside your hands — a book, a reply, a grade. It is kept apart from work that simply went quiet, and the time it spends waiting is recorded." />
+          </span>
           {blockedSince && <span className="text-[10px] text-muted">since {blockedSince.toLocaleDateString()}</span>}
         </div>
         {node.status === "blocked" ? (
@@ -401,22 +421,6 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
             </button>
           </div>
         )}
-        <p className="mt-2 text-[10px] leading-4 text-muted">
-          Blocked work is waiting on something outside your hands — a book, a reply, a grade. It is kept apart from work that simply went quiet, and the time it
-          spends waiting is recorded so you can see it later.
-        </p>
-      </div>
-
-      <div className="flex gap-2">
-        <button className="btn btn-primary flex-1" onClick={startTimer}>
-          <Play size={14} /> Start timer
-        </button>
-        <button className="btn" onClick={() => addChild(node.id)} title="Add child (N)">
-          <Plus size={14} /> Child
-        </button>
-        <button className="btn btn-danger" onClick={() => onDelete(node)} title="Delete">
-          <Trash2 size={14} />
-        </button>
       </div>
 
       <div className="card">
@@ -496,9 +500,9 @@ function WeeklyBars({ data, color }: { data: { week: string; hours: number }[]; 
   return (
     <div className="flex h-20 items-end gap-1.5">
       {data.map((d) => (
-        <div key={d.week} className="flex flex-1 flex-col items-center gap-1" title={`${d.week}: ${fmtHours(d.hours)}`}>
+        <div key={d.week} className="flex flex-1 flex-col items-center gap-1" title={`Week of ${fmtKeyShort(d.week)}: ${fmtHours(d.hours)}`}>
           <div className="progress-fill w-full rounded-t bg-panel-2" style={{ height: `${Math.max(2, (d.hours / max) * 60)}px`, background: d.hours > 0 ? color ?? "var(--accent)" : undefined }} />
-          <span className="whitespace-nowrap text-[9px] text-muted">{d.week.slice(5)}</span>
+          <span className="whitespace-nowrap text-[9px] text-muted">{fmtKeyShort(d.week)}</span>
         </div>
       ))}
     </div>

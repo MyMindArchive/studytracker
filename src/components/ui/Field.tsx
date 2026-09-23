@@ -1,11 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Info } from "lucide-react";
 
-export function Field({ label, hint, children, inline, className = "" }: { label: string; hint?: string; children: ReactNode; inline?: boolean; className?: string }) {
+/**
+ * `hint` is a word or two shown after the label (a unit, a count); `help` is an
+ * explanation, kept behind an info mark so a narrow pane of fields does not
+ * turn into a page of wrapped sentences.
+ */
+export function Field({ label, hint, help, children, inline, className = "" }: { label: string; hint?: string; help?: string; children: ReactNode; inline?: boolean; className?: string }) {
   return (
     <label className={`${inline ? "flex items-center justify-between gap-4 py-1.5" : "block py-1.5"} ${className}`}>
-      <span className="block text-xs font-medium text-muted">
-        {label}
-        {hint && <span className="ml-1 font-normal opacity-70">· {hint}</span>}
+      <span className="flex items-center gap-1 text-xs font-medium text-muted">
+        <span className="truncate">{label}</span>
+        {hint && <span className="shrink-0 font-normal opacity-70">· {hint}</span>}
+        {help && <InfoTip text={help} />}
       </span>
       <div className={inline ? "" : "mt-1"}>{children}</div>
     </label>
@@ -73,5 +80,14 @@ export function NumberInput({
         }
       }}
     />
+  );
+}
+
+/** Small info mark whose text shows on hover and is read out by screen readers. */
+export function InfoTip({ text, className = "" }: { text: string; className?: string }) {
+  return (
+    <span className={`inline-flex shrink-0 cursor-help text-muted opacity-60 hover:opacity-100 ${className}`} title={text} aria-label={text} role="img">
+      <Info size={12} />
+    </span>
   );
 }

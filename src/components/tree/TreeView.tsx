@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { Plus, ChevronsDownUp, ChevronsUpDown, ArrowUpDown } from "lucide-react";
+import { Plus, ChevronsDownUp, ChevronsUpDown, ArrowUpDown, X } from "lucide-react";
 import { startOfDay } from "date-fns";
 import { useApp } from "../../store/app";
 import { childrenOf } from "../../lib/rollup";
@@ -12,6 +12,7 @@ import { creditedSessions } from "../../lib/stats";
 import { ROLLUP_LABEL } from "../../lib/rollup";
 import { effectiveDeadlines, effectivePriorities, sortSiblings, TREE_SORT_OPTIONS, type EffectiveDeadline, type EffectivePriority } from "../../lib/treeSort";
 import { cn } from "../../lib/cn";
+import { useMediaQuery } from "../../lib/useMediaQuery";
 
 export interface FlatRow {
   node: DbNode;
@@ -24,8 +25,8 @@ export interface FlatRow {
 type ColKey = "pct" | "est" | "weight" | "due";
 type ColWidths = Record<ColKey, number>;
 
-const COL_DEFAULT: ColWidths = { pct: 64, est: 100, weight: 56, due: 84 };
-const COL_MIN: ColWidths = { pct: 56, est: 80, weight: 48, due: 64 };
+const COL_DEFAULT: ColWidths = { pct: 56, est: 76, weight: 56, due: 84 };
+const COL_MIN: ColWidths = { pct: 48, est: 64, weight: 48, due: 64 };
 const COL_MAX = 480;
 const NAME_MIN = 160;
 const PROGRESS_MIN = 100;
@@ -35,6 +36,9 @@ const DETAIL_KEY = "studytracker.tree_detail_w";
 const DETAIL_DEFAULT = 340;
 const DETAIL_MIN = 280;
 const DETAIL_MAX = 640;
+/** Below this the tree and a docked details pane cannot both fit, so the pane
+ *  becomes a drawer over the tree that opens only while something is selected. */
+const DRAWER_QUERY = "(max-width: 1099px)";
 
 function readJson<T>(key: string, fallback: T, check: (v: unknown) => v is T): T {
   try {
@@ -89,6 +93,15 @@ function useHorizontalDrag() {
     window.addEventListener("pointercancel", up);
   }, []);
   return { active, start };
+}
+
+function HeadStat({ value, label, big, title }: { value: string; label: string; big?: boolean; title?: string }) {
+  return (
+    <div className="flex flex-col leading-tight" title={title}>
+      <span className={cn("stat tabular-nums", big ? "text-xl" : "text-sm")}>{value}</span>
+      <span className="text-[11px] text-muted">{label}</span>
+    </div>
+  );
 }
 
 export function TreeView() {
@@ -168,6 +181,7 @@ export function TreeView() {
   const detailRef = useRef(detailW);
   detailRef.current = detailW;
   const drag = useHorizontalDrag();
+  const drawer = useMediaQuery(DRAWER_QUERY);
 
   const startColResize = (e: ReactPointerEvent, key: ColKey) => {
     const from = colsRef.current[key];
@@ -221,25 +235,16 @@ export function TreeView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="panel-head flex flex-wrap items-center gap-x-3 gap-y-2 whitespace-nowrap px-4 py-3">
-        <div className="flex items-baseline gap-2">
-          <span className="stat text-2xl">{root.pct.toFixed(1)}%</span>
-          <span className="text-xs text-muted">
-            overall · {root.subjectCount} project{root.subjectCount === 1 ? "" : "s"} · {ROLLUP_LABEL[rollupMode].toLowerCase()}
-          </span>
-        </div>
-        <div className="divider h-6 w-px" />
-        <div className="text-sm">
-          <span className="font-medium tabular-nums">{fmtHours(totalHours)}</span> <span className="text-muted">logged</span>
-        </div>
+      <header className="panel-head flex flex-wrap items-center gap-x-5 gap-y-2 whitespace-nowrap px-4 py-2.5">
+        {/* Each figure sits over its label so the summary takes a third of the
+            width it did as a sentence, and the controls stay on the same line. */}
+        <HeadStat value={`${root.pct.toFixed(1)}%`} label={`overall · ${root.subjectCount} project${root.subjectCount === 1 ? "" : "s"}`} big title={`Projects combine by ${ROLLUP_LABEL[rollupMode].toLowerCase()}`} />
+        <div className="divider h-8 w-px" />
+        <HeadStat value={fmtHours(totalHours)} label="logged" />
         {root.estHours !== null && (
           <>
-            <div className="text-sm">
-              <span className="font-medium tabular-nums">{fmtHours(root.estHours)}</span> <span className="text-muted">estimated</span>
-            </div>
-            <div className="text-sm">
-              <span className="font-medium tabular-nums">{fmtHours(root.remainingHours ?? 0)}</span> <span className="text-muted">remaining</span>
-            </div>
+            <HeadStat value={fmtHours(root.estHours)} label="estimated" />
+            <HeadStat value={fmtHours(root.remainingHours ?? 0)} label="remaining" />
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -274,7 +279,7 @@ export function TreeView() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <section className="min-w-0 flex-1 overflow-auto" onClick={(e) => e.target === e.currentTarget && useApp.getState().select(null)}>
           {rows.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-muted">
@@ -294,8 +299,8 @@ export function TreeView() {
                 <span className="relative text-right">
                   %{resizer("pct")}
                 </span>
-                <span className="relative text-right">
-                  Est. effort
+                <span className="relative text-right" title="Estimated effort">
+                  Est.
                   {resizer("est")}
                 </span>
                 {showWeight && (
@@ -330,22 +335,38 @@ export function TreeView() {
             </div>
           )}
         </section>
-        <div
-          className="pane-splitter"
-          data-active={drag.active === "pane"}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize details pane"
-          title="Drag to resize · double-click to reset"
-          onPointerDown={startPaneResize}
-          onDoubleClick={() => {
-            setDetailW(DETAIL_DEFAULT);
-            writeJson(DETAIL_KEY, DETAIL_DEFAULT);
-          }}
-        />
-        <aside className="shrink-0 overflow-y-auto border-l border-app bg-panel" style={{ width: detailW }}>
-          <NodeDetail onDelete={requestDelete} />
-        </aside>
+        {drawer ? (
+          selectedNodeId && (
+            <aside className="drawer absolute inset-y-0 right-0 z-20 overflow-y-auto border-l border-app bg-panel" style={{ width: Math.min(detailW, 380) }}>
+              <div className="panel-head sticky top-0 z-10 flex items-center justify-between py-1.5 pl-4 pr-2">
+                <span className="table-head">Details</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => useApp.getState().select(null)} aria-label="Close details" title="Close (Esc)">
+                  <X size={14} />
+                </button>
+              </div>
+              <NodeDetail onDelete={requestDelete} />
+            </aside>
+          )
+        ) : (
+          <>
+            <div
+              className="pane-splitter"
+              data-active={drag.active === "pane"}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize details pane"
+              title="Drag to resize · double-click to reset"
+              onPointerDown={startPaneResize}
+              onDoubleClick={() => {
+                setDetailW(DETAIL_DEFAULT);
+                writeJson(DETAIL_KEY, DETAIL_DEFAULT);
+              }}
+            />
+            <aside className="shrink-0 overflow-y-auto border-l border-app bg-panel" style={{ width: detailW }}>
+              <NodeDetail onDelete={requestDelete} />
+            </aside>
+          </>
+        )}
       </div>
 
       <Modal

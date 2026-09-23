@@ -100,28 +100,43 @@ export function AppShell() {
 
   return (
     <div className="flex h-full">
-      <nav className="sidebar flex w-52 shrink-0 flex-col">
-        <div className="px-4 pt-5 pb-3">
-          <div className="brand text-sm">StudyTracker</div>
-          <div className="text-[11px] text-muted">local-first</div>
+      {/* Below 1000px the sidebar keeps only its icons, so the tree gets the width. */}
+      <nav className="sidebar flex w-52 shrink-0 flex-col max-[999px]:w-14">
+        <div className="px-4 pt-5 pb-3 max-[999px]:px-0 max-[999px]:text-center">
+          <div className="brand text-sm max-[999px]:hidden">StudyTracker</div>
+          <div className="brand text-sm min-[1000px]:hidden" title="StudyTracker">ST</div>
+          <div className="text-[11px] text-muted max-[999px]:hidden">local-first</div>
         </div>
         <ul className="flex flex-col gap-0.5 px-2">
           {NAV.map(({ id, label, icon: Icon }) => (
             <li key={id}>
-              <button onClick={() => setView(id)} className="nav-item" data-active={view === id} aria-current={view === id ? "page" : undefined}>
-                <Icon size={16} />
-                <span className="flex-1 text-left">{label}</span>
+              <button
+                onClick={() => setView(id)}
+                className="nav-item relative max-[999px]:justify-center"
+                data-active={view === id}
+                aria-current={view === id ? "page" : undefined}
+                aria-label={label}
+                title={label}
+              >
+                <Icon size={16} className="shrink-0" />
+                <span className="flex-1 text-left max-[999px]:hidden">{label}</span>
                 {id === "inbox" && showBadge && (
-                  <span className="badge">{unassigned.toFixed(1)}h</span>
+                  <>
+                    <span className="badge max-[999px]:hidden">{unassigned.toFixed(1)}h</span>
+                    <span className="dot absolute right-1.5 top-1.5 h-2 w-2 bg-accent min-[1000px]:hidden" aria-hidden />
+                  </>
                 )}
                 {id === "timer" && phase !== "idle" && (
-                  <span className={cn("font-mono text-[11px]", phase === "paused" ? "text-muted" : "text-accent")}>{fmtClock(remaining)}</span>
+                  <>
+                    <span className={cn("font-mono text-[11px] max-[999px]:hidden", phase === "paused" ? "text-muted" : "text-accent")}>{fmtClock(remaining)}</span>
+                    <span className={cn("dot absolute right-1.5 top-1.5 h-2 w-2 min-[1000px]:hidden", phase === "paused" ? "bg-muted" : "bg-accent")} aria-hidden />
+                  </>
                 )}
               </button>
             </li>
           ))}
         </ul>
-        <div className="mt-auto px-4 pb-4 text-[11px] text-muted leading-5">
+        <div className="mt-auto px-4 pb-4 text-[11px] text-muted leading-5 max-[999px]:hidden">
           <div>
             <span className="kbd">space</span> start / pause
           </div>

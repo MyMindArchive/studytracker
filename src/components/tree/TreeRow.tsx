@@ -5,6 +5,7 @@ import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
 import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
+import { InlineNumber, type InlineNumberHandle } from "../ui/InlineNumber";
 import { cn } from "../../lib/cn";
 import type { DbNode } from "../../types";
 import { PRIORITY_LEVELS, priorityOfRank } from "../../types";
@@ -66,9 +67,8 @@ export function TreeRow({
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(node.name);
-  const [pctDraft, setPctDraft] = useState<string | null>(null);
   const [drop, setDrop] = useState<DropZone>(null);
-  const pctRef = useRef<HTMLInputElement>(null);
+  const pctRef = useRef<InlineNumberHandle>(null);
   const isLeaf = !hasChildren;
   const pct = roll?.pct ?? 0;
 
@@ -76,10 +76,7 @@ export function TreeRow({
 
   // "E" shortcut: focus percent editor of the selected row
   useEffect(() => {
-    if (selected && editPctRequest > 0 && isLeaf) {
-      pctRef.current?.focus();
-      pctRef.current?.select();
-    }
+    if (selected && editPctRequest > 0 && isLeaf) pctRef.current?.edit();
   }, [editPctRequest, selected, isLeaf]);
 
   const commitName = () => {
@@ -89,12 +86,9 @@ export function TreeRow({
     else setNameDraft(node.name);
   };
 
-  const commitPct = (raw?: string) => {
-    const v = raw ?? pctDraft;
-    if (v === null) return;
-    const n = Number(v);
-    setPctDraft(null);
-    if (v.trim() !== "" && Number.isFinite(n)) setPct(node.id, Math.max(0, Math.min(100, n)));
+  const commitPct = (raw: string) => {
+    const n = Number(raw);
+    if (raw !== "" && Number.isFinite(n)) setPct(node.id, Math.max(0, Math.min(100, n)));
   };
 
   const commitWeight = (raw: string) => {
@@ -103,8 +97,7 @@ export function TreeRow({
   };
 
   const commitEffort = (raw: string) => {
-    const v = raw.trim();
-    const n = v === "" ? null : Number(v);
+    const n = raw === "" ? null : Number(raw);
     if (n !== node.est_effort && (n === null || Number.isFinite(n))) patchNode(node.id, { est_effort: n });
   };
 
@@ -230,8 +223,8 @@ export function TreeRow({
               <RangeSlider
                 value={Math.round(pct)}
                 onCommit={(v) => setPct(node.id, v)}
-                className="h-2 w-full cursor-pointer"
-                style={{ accentColor: color ?? "var(--accent)" }}
+                className="w-full"
+                color={color}
                 ariaLabel="Percent complete"
               />
             ) : (
@@ -241,57 +234,32 @@ export function TreeRow({
 
           <div className="text-right tabular-nums">
             {isLeaf && !fromChecklist ? (
-              <input
+              <InlineNumber
                 ref={pctRef}
-                type="number"
+                value={Math.round(pct)}
+                display={`${Math.round(pct)}%`}
                 min={0}
                 max={100}
-                className="input w-16 py-0.5 text-right"
-                value={pctDraft ?? Math.round(pct)}
-                onFocus={(e) => {
-                  setPctDraft(String(Math.round(pct)));
-                  e.target.select();
-                }}
-                onChange={(e) => setPctDraft(e.target.value)}
-                onBlur={() => commitPct()}
-                onKeyDown={(e) => {
-                  const el = e.target as HTMLInputElement;
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitPct(el.value);
-                    el.blur();
-                  }
-                  if (e.key === "Escape") {
-                    setPctDraft(null);
-                    el.blur();
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
+                inputClassName="w-16"
+                ariaLabel="Percent complete"
+                onCommit={commitPct}
               />
             ) : (
-              <span className="text-muted">{pct.toFixed(1)}%</span>
+              <span className="text-muted">{fmtPct(pct)}</span>
             )}
           </div>
 
           <div className="flex items-center justify-end gap-1 text-right tabular-nums">
             {isLeaf ? (
-              <input
-                type="number"
+              <InlineNumber
+                value={node.est_effort}
+                display={node.est_effort === null ? "–" : fmtEffort(node.est_effort)}
                 min={0}
                 step="any"
-                className="input w-20 py-0.5 text-right"
                 placeholder="–"
-                defaultValue={node.est_effort ?? ""}
-                key={`${node.id}-${node.est_effort}`}
-                onBlur={(e) => commitEffort(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitEffort((e.target as HTMLInputElement).value);
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
+                inputClassName="w-20"
+                ariaLabel="Estimated effort"
+                onCommit={commitEffort}
               />
             ) : (
               <span className="text-muted">{fmtEffort(roll?.estTotal ?? 0)}</span>
@@ -438,6 +406,13 @@ function Item({ children, onSelect, danger }: { children: React.ReactNode; onSel
 
 function isLeafRow(hasChildren: boolean): boolean {
   return !hasChildren;
+}
+
+/** Group rows keep one decimal so a slow-moving project still visibly moves;
+ *  a whole number drops the ".0" so it lines up with the leaf rows. */
+function fmtPct(p: number): string {
+  const r = Math.round(p * 10) / 10;
+  return `${Number.isInteger(r) ? r : r.toFixed(1)}%`;
 }
 
 export function fmtEffort(n: number): string {

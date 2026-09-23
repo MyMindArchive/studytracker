@@ -24,10 +24,11 @@ import {
   type SessionStats,
   type VelocityRow,
 } from "../../lib/stats";
-import { fmtDuration, fmtHours } from "../../lib/time";
+import { fmtDuration, fmtHours, fmtKeyShort } from "../../lib/time";
 import type { SessionSource } from "../../types";
 import { ProgressBar } from "../ui/ProgressBar";
 import { cn } from "../../lib/cn";
+import { InfoTip } from "../ui/Field";
 
 const UNASSIGNED_COLOR = "#9ca3af";
 
@@ -58,7 +59,7 @@ export function DashboardView() {
     const weeks = vel[0]?.weekly.map((w) => w.week) ?? [];
     return weeks.map((wk, i) => {
       // null leaves a gap in the line for weeks before the project existed
-      const row: Record<string, string | number | null> = { week: wk.slice(5) };
+      const row: Record<string, string | number | null> = { week: fmtKeyShort(wk) };
       for (const v of vel) {
         const pct = v.weekly[i].pct;
         row[v.subjectId] = pct === null ? null : Math.round(pct * 10) / 10;
@@ -68,6 +69,14 @@ export function DashboardView() {
   }, [vel]);
 
   const reworkTotal = rework[0];
+  const behind = week.filter((w) => w.behindTwoWeeks);
+  /** One unit for every tick on the time axis: minutes while the tallest bar is
+   *  under an hour, hours after that. Mixing "1.1h" and "42m" on one axis made
+   *  the gaps between ticks look uneven when they were not. */
+  const axis = useMemo(() => {
+    const max = Math.max(0, ...series.rows.map((r) => series.keys.reduce((a, k) => a + (Number(r[k.key]) || 0), 0)));
+    return timeAxis(max);
+  }, [series]);
   const subjectsPva = pva.filter((r) => r.level === "subject");
   const leavesBySubject = new Map<string, typeof pva>();
   for (const r of pva) if (r.level === "leaf") leavesBySubject.set(r.subjectId, [...(leavesBySubject.get(r.subjectId) ?? []), r]);
@@ -93,7 +102,17 @@ export function DashboardView() {
 
         {/* This week per project */}
         <section className="card col-span-12 md:col-span-7 lg:col-span-8">
-          <h2 className="section-title">This week per project</h2>
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="section-title">This week per project</h2>
+            {behind.length > 0 && (
+              <span
+                className="flex items-center gap-1 text-xs text-warn"
+                title={`Below target in each of the last two full weeks: ${behind.map((w) => w.name).join(", ")}`}
+              >
+                <AlertTriangle size={12} /> {behind.length === week.length ? "All" : behind.length} below target two weeks running
+              </span>
+            )}
+          </div>
           {week.length === 0 ? (
             <Empty>Add projects with a weekly target to track them here.</Empty>
           ) : (
@@ -101,7 +120,7 @@ export function DashboardView() {
               {week.map((w) => {
                 const pct = w.target ? (w.hours / w.target) * 100 : 0;
                 return (
-                  <li key={w.subjectId} className="grid grid-cols-[160px_1fr_140px] items-center gap-3 text-sm">
+                  <li key={w.subjectId} className="grid grid-cols-[160px_1fr_96px] items-center gap-3 text-sm">
                     <div className="flex items-center gap-2 truncate">
                       <span className="dot h-2.5 w-2.5" style={{ background: w.color ?? "var(--accent)" }} />
                       <span className="truncate">{w.name}</span>
@@ -109,12 +128,10 @@ export function DashboardView() {
                     <ProgressBar pct={w.target ? pct : w.hours > 0 ? 100 : 0} color={w.color} />
                     <div className="flex items-center justify-end gap-2 tabular-nums text-xs">
                       <span>{fmtHours(w.hours)}</span>
-                      <span className="text-muted">/ {w.target != null ? fmtHours(w.target, 0) : "–"}</span>
-                      {w.behindTwoWeeks && (
-                        <span className="flex items-center gap-1 text-warn" title="Below target the last two full weeks">
-                          <AlertTriangle size={12} /> 2 wks
-                        </span>
-                      )}
+                      {/* the header already says how many are behind; the row only marks which */}
+                      <span className={w.behindTwoWeeks ? "text-warn" : "text-muted"} title={w.behindTwoWeeks ? "Below target the last two full weeks" : undefined}>
+                        / {w.target != null ? fmtHours(w.target, 0) : "–"}
+                      </span>
                     </div>
                   </li>
                 );
@@ -192,9 +209,20 @@ export function DashboardView() {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={series.rows} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid vertical={false} stroke="var(--border)" />
-                <XAxis dataKey="bucket" tick={{ fontSize: 11, fill: "var(--muted)" }} tickFormatter={(v: string) => (period === "month" ? v : v.slice(5))} />
-                <YAxis tick={{ fontSize: 11, fill: "var(--muted)" }} width={52} tickFormatter={fmtAxisHours} />
-                <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => fmtHours(Number(v))} labelStyle={{ color: "var(--muted)" }} />
+                <XAxis dataKey="bucket" tick={{ fontSize: 11, fill: "var(--muted)" }} tickFormatter={(v: string) => fmtKeyShort(v)} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: "var(--muted)" }}
+                  width={44}
+                  domain={[0, axis.ticks[axis.ticks.length - 1]]}
+                  ticks={axis.ticks}
+                  tickFormatter={(v: number) => fmtAxis(v, axis.minutes)}
+                />
+                <Tooltip
+                  contentStyle={tooltipStyle}
+                  formatter={(v: number) => fmtHours(Number(v))}
+                  labelFormatter={(v: string) => (period === "week" ? `Week of ${fmtKeyShort(v)}` : fmtKeyShort(v))}
+                  labelStyle={{ color: "var(--muted)" }}
+                />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 {series.keys.map((k) => (
                   <Bar key={k.key} dataKey={k.key} name={k.name} stackId="t" fill={k.key === UNASSIGNED ? UNASSIGNED_COLOR : k.color ?? "var(--accent)"} radius={0} />
@@ -292,13 +320,13 @@ export function DashboardView() {
                   ))}
                 </tbody>
               </table>
-              <p className="mt-2 text-[10px] leading-4 text-muted">
+              <Explainer>
                 Pace is the points you gained divided by the days it took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks back). A
                 project starts at the earliest of its creation or its first logged session, so backfilling hours you already put in moves the start back and
                 corrects the pace. Needed is what it would take from today to reach 100&thinsp;% by the deadline &mdash; a project&rsquo;s own date, or the
                 nearest one among its unfinished tasks. Compare the two: pace below needed is the gap you have to make up, and &ldquo;By deadline&rdquo; is
                 where today&rsquo;s pace actually lands you. A young project&rsquo;s pace rests on very little; the dot beside it says how much.
-              </p>
+              </Explainer>
             </>
           )}
         </section>
@@ -318,12 +346,11 @@ export function DashboardView() {
                 <Tile label="Went backwards" value={`${reworkTotal.backwards}`} big />
                 <Tile label="Points given back" value={reworkTotal.pointsLost >= 1 ? reworkTotal.pointsLost.toFixed(0) : reworkTotal.pointsLost.toFixed(1)} big />
               </div>
-              <p className="mt-2 text-[10px] leading-4 text-muted">
+              <p className="mt-2 flex items-center gap-1 text-xs text-muted">
                 {reworkTotal.moves === 0
                   ? "Rework shows up here once percentages start moving."
-                  : `${(reworkTotal.rate * 100).toFixed(0)} % of your percent changes were downward, across ${reworkTotal.tasks} task${
-                      reworkTotal.tasks === 1 ? "" : "s"
-                    }. A percent that drops means work was redone, called done too early, or re-scoped — pace only ever shows the net.`}
+                  : `${(reworkTotal.rate * 100).toFixed(0)} % of percent changes went down, across ${reworkTotal.tasks} task${reworkTotal.tasks === 1 ? "" : "s"}`}
+                <InfoTip text="A percent that drops means work was redone, called done too early, or re-scoped. Pace only ever shows the net." />
               </p>
             </div>
           </div>
@@ -352,10 +379,10 @@ export function DashboardView() {
             </div>
             <Heatmap data={stats.heatmap} />
           </div>
-          <p className="mt-2 text-[10px] leading-4 text-muted">
-            Lengths are the median and the 85th percentile, not an average: one long Sunday would drag a mean somewhere no session ever was. Longest fifth of
-            your blocks run {fmtDuration(stats.p85Seconds)} or more.
-          </p>
+          <Explainer>
+            Lengths are the median and the 85th percentile, not an average: one long Sunday would drag a mean somewhere no session ever was. The longest
+            fifth of your blocks run {fmtDuration(stats.p85Seconds)} or more.
+          </Explainer>
         </section>
       </div>
     </div>
@@ -532,15 +559,25 @@ function sourceLine(sources: Record<SessionSource, number>): string {
   return parts.join(" \u00b7 ");
 }
 
-/** Axis labels in the unit that keeps neighbouring ticks distinct: s, m or h. */
-function fmtAxisHours(v: number): string {
+/**
+ * Round tick steps in a single unit: minutes while the tallest bar is under an
+ * hour, hours after that. Mixing "1.1h" and "42m" on one axis, at steps of
+ * 0.35 h, made the spacing look uneven when it was not.
+ */
+function timeAxis(maxHours: number): { minutes: boolean; ticks: number[] } {
+  const minutes = maxHours < 1;
+  const steps = minutes ? [5, 10, 15, 30].map((m) => m / 60) : [0.25, 0.5, 1, 2, 4, 5, 10, 20, 25, 50, 100];
+  const top = Math.max(maxHours, minutes ? 5 / 60 : 1);
+  const step = steps.find((st) => top / st <= 4) ?? steps[steps.length - 1];
+  const n = Math.ceil(top / step - 1e-9);
+  return { minutes, ticks: Array.from({ length: n + 1 }, (_, i) => i * step) };
+}
+
+/** Axis label in the one unit the whole axis uses (see timeAxis). */
+function fmtAxis(v: number, minutes: boolean): string {
   if (v === 0) return "0";
-  if (v < 2 / 60) return `${Math.round(v * 3600)}s`;
-  if (v < 1) {
-    const m = v * 60;
-    return `${Number.isInteger(m) ? m : m.toFixed(1).replace(/\.0$/, "")}m`;
-  }
-  return `${Number.isInteger(v) ? v : v.toFixed(1)}h`;
+  if (minutes) return `${Math.round(v * 60)}m`;
+  return `${Math.round(v * 100) / 100}h`;
 }
 
 /* --------------------------------------------------------------- pace */
@@ -729,6 +766,16 @@ function Tile({ label, value, big, icon }: { label: string; value: string; big?:
         {value}
       </div>
     </div>
+  );
+}
+
+/** Method notes stay one click away instead of a paragraph under every chart. */
+function Explainer({ children }: { children: React.ReactNode }) {
+  return (
+    <details className="explainer mt-2 text-xs text-muted">
+      <summary>How is this calculated?</summary>
+      <p className="mt-1.5 max-w-prose leading-5">{children}</p>
+    </details>
   );
 }
 

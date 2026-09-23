@@ -40,6 +40,21 @@ export function fmtHours(h: number, digits = 1): string {
   return `${h.toFixed(digits)}h`;
 }
 
+/**
+ * A day or month key ("2026-09-14", "2026-09") in the same short local form the
+ * tables use for dates ("14 Sept" / "Sep 14"), so a chart axis and the row under
+ * it never spell the same date two ways. The year appears only when it differs.
+ */
+export function fmtKeyShort(key: string, now = new Date()): string {
+  const month = key.length === 7;
+  const d = parseISO(month ? `${key}-01` : key);
+  if (!isValid(d)) return key;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const opts: Intl.DateTimeFormatOptions = month ? { month: "short" } : { month: "short", day: "numeric" };
+  if (!sameYear) opts.year = month ? "numeric" : "2-digit";
+  return d.toLocaleDateString(undefined, opts);
+}
+
 export function fmtDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   const h = Math.floor(s / 3600);

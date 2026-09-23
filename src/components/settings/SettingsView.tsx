@@ -366,8 +366,8 @@ export function SettingsView() {
                   min={0}
                   max={90}
                   step={5}
-                  className="w-full"
-                  style={{ accentColor: "var(--accent)" }}
+                  className="range range-thumb w-full"
+                  style={{ "--range-fill": `${(settings.timer_overlay * 100 / 90) * 100}%` } as React.CSSProperties}
                   value={Math.round(settings.timer_overlay * 100)}
                   onChange={(e) => update("timer_overlay", Number(e.target.value) / 100)}
                   aria-label="Overlay strength"
