@@ -574,6 +574,10 @@ export const useApp = create<AppState>((set, get) => {
               sets.push("priority = ?");
               vals.push(r.priority);
             }
+            if (r.note !== null) {
+              sets.push("note = ?");
+              vals.push(r.note);
+            }
             if (r.weight !== null) {
               sets.push("weight = ?");
               vals.push(r.weight);
@@ -615,6 +619,7 @@ export const useApp = create<AppState>((set, get) => {
                 planned_start: r.planned_start,
                 status: null,
                 priority: r.priority,
+                note: r.note,
                 created_at: ts,
                 updated_at: ts,
                 weight: r.weight ?? 1,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Trash2, Plus, CheckSquare, CalendarPlus, PauseOctagon } from "lucide-react";
 import { addWeeks } from "date-fns";
 import { useApp } from "../../store/app";
@@ -377,6 +377,8 @@ export function NodeDetail({ onDelete }: { onDelete: (n: DbNode) => void }) {
         </div>
       )}
 
+      <NoteCard key={node.id} node={node} onSave={(note) => patchNode(node.id, { note })} />
+
       <div className="card">
         <div className="mb-2 flex items-baseline justify-between">
           <span className="flex items-center gap-1">
@@ -505,6 +507,61 @@ function WeeklyBars({ data, color }: { data: { week: string; hours: number }[]; 
           <span className="whitespace-nowrap text-[9px] text-muted">{fmtKeyShort(d.week)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Free text kept with the node. Saved when you leave the box rather than per
+ * keystroke, so a paragraph is one write, not hundreds.
+ * Keyed by node id, so switching rows starts from that row's own note.
+ */
+function NoteCard({ node, onSave }: { node: DbNode; onSave: (note: string | null) => void }) {
+  const [draft, setDraft] = useState(node.note ?? "");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  // Picks up a change from elsewhere (a restore, a CSV merge) unless you are typing in it.
+  useEffect(() => {
+    if (document.activeElement !== ref.current) setDraft(node.note ?? "");
+  }, [node.note]);
+  // Grow with the text instead of scrolling inside a small box.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(480, el.scrollHeight + 2)}px`;
+  }, [draft]);
+  const save = () => {
+    const next = draft.trim() === "" ? null : draft.replace(/\s+$/, "");
+    if (next !== (node.note ?? null)) onSave(next);
+  };
+  return (
+    <div className="card">
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="flex items-center gap-1">
+          <span className="section-title">Notes</span>
+          <InfoTip text="Anything worth keeping with this item: links, page numbers, what to review. Saved when you click away; ⌘Enter also saves." />
+        </span>
+      </div>
+      <textarea
+        ref={ref}
+        className="input min-h-[72px] w-full resize-none py-1.5 text-sm leading-relaxed"
+        placeholder="Add a note…"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            ref.current?.blur();
+          }
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setDraft(node.note ?? "");
+            requestAnimationFrame(() => ref.current?.blur());
+          }
+        }}
+        aria-label={`Notes for ${node.name}`}
+      />
     </div>
   );
 }

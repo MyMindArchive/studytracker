@@ -106,7 +106,7 @@ edition has no such folder, so the downloaded backup is the only copy there.
 ## Data model
 
 `nodes` — id, parent_id (null for subjects), name, depth, sort_order, est_effort,
-pct_complete (leaves only), deadline, planned_start, status, priority, created_at,
+pct_complete (leaves only), deadline, planned_start, status, priority, note, created_at,
 updated_at, weight (share among siblings, default 1), rollup_mode
 (`equal`|`weight`|`effort`|null = inherit), and subject-only fields unit,
 hours_per_unit, weekly_target_hours, color.
@@ -122,6 +122,12 @@ as the lower one. NULL means nothing was said, which is not the same as Low. A p
 index (`WHERE priority IS NOT NULL`) covers it, since most rows never carry one. The CSV
 mirror writes the word (`urgent`) for legibility and reads back either the word or the
 rank.
+
+`nodes.note` (schema v6) is free text on any node, project or task, edited in the
+details pane under the checklist (tasks) or the children list (groups) and saved when the
+box loses focus. NULL means no note; clearing the box writes NULL, not an empty string.
+It travels with backups, the CSV mirror, CSV merge (a blank cell leaves the note alone)
+and Duplicate. Rows with a note show a small note mark; hovering it shows the start.
 
 `pct_history` — one row per leaf percent change (id, node_id, pct, changed_at).
 

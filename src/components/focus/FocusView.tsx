@@ -6,7 +6,7 @@ import { childrenOf } from "../../lib/rollup";
 import { FOCUS_SORT_OPTIONS, focusItems, isFocusSort, sortFocus, type FocusItem, type FocusSort } from "../../lib/focus";
 import type { DbNode } from "../../types";
 import { NodeDetail } from "../tree/NodeDetail";
-import { DueLabel, PriorityChip, fmtEffort } from "../tree/TreeRow";
+import { DueLabel, NoteMark, PriorityChip, fmtEffort } from "../tree/TreeRow";
 import { ProgressBar } from "../ui/ProgressBar";
 import { RangeSlider } from "../ui/RangeSlider";
 import { Modal } from "../ui/Modal";
@@ -236,6 +236,7 @@ function FocusRow({
             <span className="truncate" title={node.name}>
               {node.name}
             </span>
+            {node.note && <NoteMark note={node.note} />}
             {item.blocked && <span className="chip ml-1 shrink-0">blocked</span>}
             {fromChecklist && (
               <span className="chip ml-1 inline-flex shrink-0 items-center gap-0.5" title="Checklist items done">

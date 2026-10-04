@@ -123,8 +123,8 @@ describe("roll-up", () => {
     expect((await listChecklist(db)).filter((i) => i.node_id === ch.id).length).toBe(2);
   });
 
-  it("schema v5 adds weight, rollup_mode, checklist_items, status, planned_start and priority with sane defaults", async () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(5);
+  it("schema v6 adds weight, rollup_mode, checklist_items, status, planned_start, priority and note with sane defaults", async () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(6);
     const s = await createNode(db, { parent_id: null, name: "S" });
     const [row] = await listNodes(db);
     expect(row.id).toBe(s.id);
@@ -134,6 +134,23 @@ describe("roll-up", () => {
     expect(row.planned_start).toBeNull();
     // A priority is something you say, not something every task starts with.
     expect(row.priority).toBeNull();
+  });
+
+  it("keeps a multi-line note on any node, clears it to NULL, and carries it through CSV and duplicate", async () => {
+    const s = await createNode(db, { parent_id: null, name: "P" });
+    const leaf = await createNode(db, { parent_id: s.id, name: "Task" });
+    expect(leaf.note).toBeNull();
+    const text = 'Read p. 40–52\nAsk about "eq. 3", then review';
+    await updateNode(db, s.id, { note: "project-wide" });
+    await updateNode(db, leaf.id, { note: text });
+    const rows = await listNodes(db);
+    expect(rows.find((n) => n.id === leaf.id)!.note).toBe(text);
+    expect(parseNodesFullCsv(nodesCsv(rows)).find((n) => n.id === leaf.id)!.note).toBe(text);
+    expect(parseNodesCsv(nodesCsv(rows)).find((n) => n.id === s.id)!.note).toBe("project-wide");
+    const copy = await duplicateNode(db, leaf.id);
+    expect((await listNodes(db)).find((n) => n.id === copy)!.note).toBe(text);
+    await updateNode(db, leaf.id, { note: null });
+    expect((await listNodes(db)).find((n) => n.id === leaf.id)!.note).toBeNull();
   });
 
   it("stores priority as a rank, keeps it out of range of the CHECK, and round-trips the name through CSV", async () => {

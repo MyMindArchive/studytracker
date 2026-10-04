@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { CheckSquare, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { CheckSquare, ChevronDown, ChevronRight, GripVertical, StickyNote } from "lucide-react";
 import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
 import { ProgressBar } from "../ui/ProgressBar";
@@ -211,6 +211,7 @@ export function TreeRow({
                 <CheckSquare size={10} /> {checklist!.done}/{checklist!.total}
               </span>
             )}
+            {node.note && <NoteMark note={node.note} />}
             {parentMode === "weight" && weightOf(node) !== 1 && (
               <span className="chip ml-1.5 shrink-0" title="Weight among siblings">
                 ×{fmtEffort(weightOf(node))}
@@ -379,6 +380,16 @@ export function PriorityChip({ priority }: { priority: EffectivePriority }) {
       }
     >
       {lvl.short}
+    </span>
+  );
+}
+
+/** A row with a note says so; hovering shows the start of it. */
+export function NoteMark({ note }: { note: string }) {
+  const preview = note.length > 280 ? `${note.slice(0, 280)}…` : note;
+  return (
+    <span className="ml-1.5 inline-flex shrink-0 text-muted" title={preview} aria-label="Has a note">
+      <StickyNote size={12} />
     </span>
   );
 }

@@ -38,6 +38,7 @@ export const NODE_INSERT_COLUMNS = [
   "planned_start",
   "status",
   "priority",
+  "note",
   "created_at",
   "updated_at",
   "weight",
@@ -96,6 +97,7 @@ export async function createNode(db: SqlDriver, input: NewNodeInput): Promise<Db
     planned_start: input.planned_start ?? null,
     status: null,
     priority: clampPriority(input.priority),
+    note: null,
     created_at: ts,
     updated_at: ts,
     weight: input.weight ?? 1,
@@ -117,7 +119,7 @@ export async function createNode(db: SqlDriver, input: NewNodeInput): Promise<Db
 export type NodePatch = Partial<
   Pick<
     DbNode,
-    "name" | "est_effort" | "deadline" | "planned_start" | "priority" | "weight" | "rollup_mode" | "unit" | "hours_per_unit" | "weekly_target_hours" | "color"
+    "name" | "est_effort" | "deadline" | "planned_start" | "priority" | "note" | "weight" | "rollup_mode" | "unit" | "hours_per_unit" | "weekly_target_hours" | "color"
   >
 >;
 
@@ -634,6 +636,7 @@ export async function replaceAll(db: SqlDriver, data: BackupData): Promise<void>
         planned_start: strOrNull(n.planned_start),
         status: n.status === "blocked" ? "blocked" : null,
         priority: clampPriority(numOrNull(n.priority)),
+        note: strOrNull(n.note),
         created_at: str(n.created_at) || nowIso(),
         updated_at: str(n.updated_at) || str(n.created_at) || nowIso(),
         weight: numOr(n.weight, 1),

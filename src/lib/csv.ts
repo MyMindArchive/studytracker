@@ -27,6 +27,7 @@ export const NODE_COLUMNS: (keyof DbNode & string)[] = [
   "planned_start",
   "status",
   "priority",
+  "note",
   "created_at",
   "updated_at",
   "weight",
@@ -158,6 +159,7 @@ export interface ImportedNodeRow {
   deadline: string | null;
   planned_start: string | null;
   priority: number | null;
+  note: string | null;
   weight: number | null;
   rollup_mode: RollupMode | null;
   unit: string | null;
@@ -189,6 +191,7 @@ export function parseNodesCsv(text: string): ImportedNodeRow[] {
     deadline: get(r, "deadline"),
     planned_start: get(r, "planned_start"),
     priority: parsePriority(get(r, "priority")),
+    note: get(r, "note"),
     weight: num(get(r, "weight")),
     rollup_mode: mode(get(r, "rollup_mode")),
     unit: get(r, "unit"),
@@ -248,6 +251,7 @@ export function parseNodesFullCsv(text: string, now = nowStamp()): DbNode[] {
     planned_start: r.planned_start,
     status: r.status === "blocked" ? "blocked" : null,
     priority: parsePriority(r.priority),
+    note: r.note ?? null,
     created_at: r.created_at ?? now,
     updated_at: r.updated_at ?? r.created_at ?? now,
     weight: numOr(r.weight, 1),

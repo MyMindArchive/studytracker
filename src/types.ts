@@ -110,6 +110,8 @@ export interface DbNode {
   status: NodeStatus | null;
   /** stored priority rank (see PRIORITY_LEVELS); null = none set */
   priority: number | null;
+  /** free text kept with the node, shown under its checklist / children; null = none */
+  note: string | null;
   created_at: string;
   updated_at: string;
   /** share among siblings, used when the parent rolls up by weight */

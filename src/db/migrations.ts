@@ -125,6 +125,14 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_nodes_priority ON nodes(priority DESC) WHERE priority IS NOT NULL`,
     ],
   },
+  {
+    version: 6,
+    statements: [
+      // Free-text notes on any node, project or task. NULL rather than '' for
+      // "no note", so a cleared note and one never written read the same.
+      `ALTER TABLE nodes ADD COLUMN note TEXT NULL`,
+    ],
+  },
 ];
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
