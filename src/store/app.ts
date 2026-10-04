@@ -17,7 +17,7 @@ import { backupCounts, backupFilename, backupJson, buildBackup as makeBackup, ty
 import { uid, nowIso } from "../lib/ids";
 import { isTreeSortKey, type TreeSortKey } from "../lib/treeSort";
 
-export type View = "tree" | "timer" | "inbox" | "dashboard" | "settings";
+export type View = "tree" | "focus" | "timer" | "inbox" | "dashboard" | "settings";
 
 export interface Toast {
   id: string;

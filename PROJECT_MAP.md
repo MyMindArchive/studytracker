@@ -140,6 +140,10 @@ stats.ts    dashboard maths: hoursToday, thisWeekBySubject, timeBySubject,
             a log-median ratio, falling back to the pooled ratio under MIN_SUPPORT)
             and reworkRate (percent changes that went backwards). quantile/median
             live here too — nothing user-facing is reported as a mean.
+focus.ts    Focus list: focusItems (deepest open node with its own priority or
+            deadline; both inherited downward when missing), priorityScore,
+            deadlineScore (h/day left vs daily target, calendar fallback without an
+            estimate, overdue = 100), sortFocus, upNext (Timer panel + NodePicker)
 time.ts     date-fns helpers; WEEK_STARTS_ON = 1 (Monday); day/week/month keys,
             fmtHours/fmtDuration/fmtClock, relativeDue (today / in 3d / 2d overdue),
             streak, listWeekStarts
@@ -188,6 +192,9 @@ tree/TreeRow.tsx           one row: name (only draggable part, manual order only
                            Exports fmtEffort, shortUnit.
 tree/NodeDetail.tsx  (409) right panel: fields, checklist editor, sessions, weekly hours,
                            percent sparkline. Exports StatusPill.
+focus/FocusView.tsx        flat list from lib/focus (Combined | Priority | Deadline, kept in
+                           localStorage studytracker.focus_sort), project column opens the
+                           branch above the task, leaf slider, own details pane/drawer
 timer/TimerView.tsx        single/cycle controls, presets, abort & tag dialogs; .timer-stage
                            wrapper paints the optional backdrop (blob: URL from the stored
                            data: URL) + overlay; data-tone="dark" re-points colour tokens

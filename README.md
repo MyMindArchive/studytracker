@@ -178,6 +178,18 @@ inherited by everything beneath it.
   resizable by dragging their dividers (double-click to reset) and remembered per device;
   Name and Progress keep their own flexible widths. Right panel shows detail, sessions, weekly hours,
   percent sparkline. Header shows root totals and a subject filter.
+* **Focus** — the same work as a flat list, without the tree. It lists the *deepest open
+  node you marked* with a priority or a deadline: if Chapter 1 is Urgent and Part A inside
+  it is Urgent too, only Part A is listed, and Chapter 1 comes back once Part A is finished.
+  A listed task without its own priority or deadline takes the nearest ancestor's. Three
+  orders: **Priority** (ties on the deadline), **Deadline** (ties on priority) and
+  **Combined**, half priority (Low 20 … Emergency 100) and half deadline — remaining hours
+  per day until due against the daily target, capped at 100; overdue is 100; a task with no
+  estimate falls back to the calendar (100 today, 50 a week out) and says *no estimate*.
+  Blocked work sits at the bottom. The project column opens the branch above the task
+  (ancestors with their roll-up, the task among its siblings); leaf rows have the same
+  progress slider as the tree; clicking a row opens the details pane. The Timer shows the
+  top five as **Up next**, and its task picker lists them above the tree.
 * **Timer** — Single (dial or typed duration, editable presets) or Cycle (work, break,
   rounds, long break every N). Each work block writes its own session row sharing a
   `cycle_id`; breaks are never logged. Pause/resume, +5/+10, abort with credit or discard.

@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { BarChart3, Inbox, ListTree, Settings as SettingsIcon, Timer as TimerIcon } from "lucide-react";
+import { BarChart3, Inbox, ListTree, Settings as SettingsIcon, Target, Timer as TimerIcon } from "lucide-react";
 import { useApp, type View } from "../../store/app";
 import { useTimer } from "../../store/timer";
 import { TreeView } from "../tree/TreeView";
+import { FocusView } from "../focus/FocusView";
 import { TimerView } from "../timer/TimerView";
 import { InboxView } from "../inbox/InboxView";
 import { DashboardView } from "../dashboard/DashboardView";
@@ -14,6 +15,7 @@ import { cn } from "../../lib/cn";
 
 const NAV: { id: View; label: string; icon: typeof ListTree }[] = [
   { id: "tree", label: "Tree", icon: ListTree },
+  { id: "focus", label: "Focus", icon: Target },
   { id: "timer", label: "Timer", icon: TimerIcon },
   { id: "inbox", label: "Inbox", icon: Inbox },
   { id: "dashboard", label: "Dashboard", icon: BarChart3 },
@@ -153,6 +155,7 @@ export function AppShell() {
       </nav>
       <main className="min-w-0 flex-1 overflow-hidden">
         {view === "tree" && <TreeView />}
+        {view === "focus" && <FocusView />}
         {view === "timer" && <TimerView />}
         {view === "inbox" && <InboxView />}
         {view === "dashboard" && <DashboardView />}

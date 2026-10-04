@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bell, BellOff, Pause, Play, Plus, Square, SkipForward, X } from "lucide-react";
 import { useApp } from "../../store/app";
 import { useTimer } from "../../store/timer";
@@ -10,6 +10,9 @@ import { cn } from "../../lib/cn";
 import { Dial } from "./Dial";
 import { subjectIndex } from "../../lib/rollup";
 import { dataUrlToObjectUrl } from "../../lib/media";
+import { upNext } from "../../lib/focus";
+import { relativeDue } from "../../lib/time";
+import { priorityOfRank } from "../../types";
 
 export function TimerView() {
   const t = useTimer();
@@ -141,8 +144,9 @@ export function TimerView() {
       {/* tag */}
       <div className="mt-5 flex w-full max-w-md items-center gap-2">
         <span className="text-xs text-muted">Tag</span>
-        <NodePicker value={t.nodeId} onChange={t.setNode} emptyLabel="— untagged (goes to inbox) —" className="input flex-1" />
+        <NodePicker value={t.nodeId} onChange={t.setNode} emptyLabel="— untagged (goes to inbox) —" className="input flex-1" upNextFirst />
       </div>
+      <UpNext selected={t.nodeId} onPick={t.setNode} />
 
       {/* controls */}
       <div className="mt-7 flex items-center gap-6">
@@ -238,5 +242,55 @@ function TagPrompt() {
     >
       <NodePicker value={choice} onChange={setChoice} className="input w-full" autoFocus />
     </Modal>
+  );
+}
+
+/** The top of the Focus order, one click from being the next block's task. */
+function UpNext({ selected, onPick }: { selected: string | null; onPick: (id: string) => void }) {
+  const nodes = useApp((s) => s.nodes);
+  const rollup = useApp((s) => s.rollup);
+  const dailyTarget = useApp((s) => s.settings.daily_target_hours);
+  const setView = useApp((s) => s.setView);
+  const items = useMemo(() => upNext({ nodes, rollup, dailyTargetHours: dailyTarget, today: new Date() }), [nodes, rollup, dailyTarget]);
+  if (items.length === 0) return null;
+  return (
+    <div className="card mt-3 w-full max-w-md p-2">
+      <div className="flex items-center justify-between px-1 pb-1">
+        <span className="table-head">Up next</span>
+        <button className="text-[11px] text-muted hover:text-fg" onClick={() => setView("focus")}>
+          See all →
+        </button>
+      </div>
+      {items.map((i) => {
+        const lvl = priorityOfRank(i.priority);
+        const due = i.deadline ? relativeDue(i.deadline) : null;
+        const active = selected === i.node.id;
+        return (
+          <button
+            key={i.node.id}
+            className={cn("flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-[var(--panel-2)]", active && "bg-[var(--sel)]")}
+            onClick={() => onPick(i.node.id)}
+            title={`Tag the timer with ${i.node.name}`}
+            aria-pressed={active}
+          >
+            <span className="dot h-2 w-2 shrink-0" style={{ background: i.subject.color ?? "var(--accent)" }} />
+            <span className="min-w-0 flex-1 truncate">
+              {i.node.name}
+              <span className="ml-2 text-xs text-muted">{i.subject.id === i.node.id ? "" : i.subject.name}</span>
+            </span>
+            {lvl && (
+              <span className="chip shrink-0 font-medium" style={{ color: "#fff", borderColor: lvl.color, background: lvl.color }} title={lvl.label}>
+                {lvl.short}
+              </span>
+            )}
+            {due && (
+              <span className="due w-16 shrink-0 text-right" data-tone={due.tone}>
+                {due.label}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }

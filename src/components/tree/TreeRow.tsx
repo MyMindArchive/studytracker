@@ -364,7 +364,7 @@ export function TreeRow({
  * An inherited chip (the highest still open underneath a group) is drawn
  * hollow, the same distinction the Due column makes with italics.
  */
-function PriorityChip({ priority }: { priority: EffectivePriority }) {
+export function PriorityChip({ priority }: { priority: EffectivePriority }) {
   const lvl = priorityOfRank(priority.rank);
   if (!lvl) return null;
   const title = priority.inherited ? `Highest priority among the open tasks below: ${lvl.label}` : `Priority: ${lvl.label}`;
@@ -383,7 +383,7 @@ function PriorityChip({ priority }: { priority: EffectivePriority }) {
   );
 }
 
-function DueLabel({ due, today, done }: { due: EffectiveDeadline; today: number; done: boolean }) {
+export function DueLabel({ due, today, done }: { due: EffectiveDeadline; today: number; done: boolean }) {
   const rel = relativeDue(due.date, new Date(today));
   const title = `${due.inherited ? "Earliest open task deadline: " : "Due "}${due.date}${done ? " (finished)" : ""}`;
   return (
