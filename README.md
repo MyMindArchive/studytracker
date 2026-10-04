@@ -196,6 +196,10 @@ inherited by everything beneath it.
   Settings › Focus screen adds an optional backdrop image (shrunk to 1920px, stored in the
   database) with a dark or light translucent overlay of adjustable strength, and a custom
   bell sound (MP3/WAV/OGG/M4A up to 3 MB) in place of the built-in chime.
+  **Count up** runs open-ended as a stopwatch (the ring sweeps once an hour): nothing is
+  written until you press Finish (or Abort and credit it), and at 12 h it stops by itself
+  and logs the 12 h. It is stored as a single block whose planned time equals the time
+  counted, since the sessions table only knows single and cycle.
   Untagged sessions trigger one skippable tag prompt per run.
 * **Inbox** — sessions with no task; assign one at a time or many at once. Badge appears
   when untagged time exceeds the threshold setting.

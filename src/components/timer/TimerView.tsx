@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bell, BellOff, Pause, Play, Plus, Square, SkipForward, X } from "lucide-react";
+import { Bell, BellOff, Check, Pause, Play, Plus, Square, SkipForward, X } from "lucide-react";
 import { useApp } from "../../store/app";
-import { useTimer } from "../../store/timer";
+import { COUNTUP_MAX_SECONDS, TIMER_MODES, useTimer } from "../../store/timer";
 import { NodePicker } from "../ui/NodePicker";
 import { Modal } from "../ui/Modal";
 import { Field, NumberInput } from "../ui/Field";
@@ -33,13 +33,16 @@ export function TimerView() {
     return () => URL.revokeObjectURL(url);
   }, [backdrop]);
   const remaining = t.remaining();
+  const countUp = t.mode === "countup";
+  const elapsed = t.elapsed();
   const running = t.phase === "running";
   const idle = t.phase === "idle";
   const isBreak = t.blockKind !== "work";
   const node = nodes.find((n) => n.id === t.nodeId);
   const subject = node ? subjectIndex(nodes).get(node.id) : undefined;
   const color = isBreak ? "var(--ok)" : subject?.color ?? "var(--accent)";
-  const progress = idle ? 0 : 1 - remaining / Math.max(1, t.plannedSeconds);
+  // The dial draws what is left; a count-up has no end, so its arc grows through each hour instead.
+  const progress = idle ? (countUp ? 1 : 0) : countUp ? 1 - (elapsed % 3600) / 3600 : 1 - remaining / Math.max(1, t.plannedSeconds);
 
   // Re-render every 250ms while running via tick subscription
   void t.tick;
@@ -49,7 +52,9 @@ export function TimerView() {
 
   const endsAt = running && t.endsAt ? new Date(t.endsAt) : null;
   const stateLabel = idle
-    ? t.mode === "single"
+    ? countUp
+      ? `count up · max ${COUNTUP_MAX_SECONDS / 3600} h`
+      : t.mode === "single"
       ? `${t.singleMinutes} min`
       : `${t.cycle.rounds} rounds · ${t.cycle.workMinutes} / ${t.cycle.breakMinutes} min`
     : isBreak
@@ -68,9 +73,9 @@ export function TimerView() {
     <div className="timer-stage-content flex h-full flex-col items-center overflow-y-auto px-6 py-6">
       {/* mode toggle */}
       <div className="seg seg-lg">
-        {(["single", "cycle"] as const).map((m) => (
-          <button key={m} disabled={!idle} onClick={() => t.setMode(m)} className="seg-item" data-active={t.mode === m}>
-            {m}
+        {TIMER_MODES.map((m) => (
+          <button key={m.id} disabled={!idle} onClick={() => t.setMode(m.id)} className="seg-item" data-active={t.mode === m.id}>
+            {m.label}
           </button>
         ))}
       </div>
@@ -79,9 +84,9 @@ export function TimerView() {
       <div className="relative mt-6">
         <Dial size={320} progress={progress} color={color} interactive={idle && t.mode === "single"} minutes={t.singleMinutes} onMinutes={(m) => t.setSingleMinutes(m)} />
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <div className={cn("timer-digits text-[76px]", t.phase === "paused" && "opacity-50")}>{fmtClock(remaining)}</div>
+          <div className={cn("timer-digits text-[76px]", t.phase === "paused" && "opacity-50")}>{fmtClock(countUp ? Math.min(COUNTUP_MAX_SECONDS, elapsed) : remaining)}</div>
           <div className="mt-2 max-w-[200px] truncate text-xs uppercase tracking-[0.2em] text-muted">{stateLabel}</div>
-          {endsAt && (
+          {endsAt && !countUp && (
             <div className="mt-2 flex items-center gap-1 text-sm text-muted">
               <Bell size={13} /> {endsAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </div>
@@ -161,6 +166,12 @@ export function TimerView() {
               {isBreak ? <X size={18} /> : <Square size={16} />}
               <span>{isBreak ? "End" : "Abort"}</span>
             </button>
+            {countUp ? (
+              <button className="round-btn" style={{ "--tint": "var(--ok)" } as React.CSSProperties} onClick={t.finish} title="Stop and log the time counted">
+                <Check size={18} />
+                <span>Finish</span>
+              </button>
+            ) : (
             <div className="flex items-center gap-2">
               <button className="btn btn-sm rounded-full px-3" onClick={() => t.extend(5)}>
                 <Plus size={12} /> 5
@@ -174,6 +185,7 @@ export function TimerView() {
                 </button>
               )}
             </div>
+            )}
             <button className="round-btn" style={{ "--tint": running ? "var(--warn)" : "var(--ok)" } as React.CSSProperties} onClick={running ? t.pause : t.resume}>
               {running ? <Pause size={18} /> : <Play size={18} />}
               <span>{running ? "Pause" : "Resume"}</span>
@@ -182,7 +194,7 @@ export function TimerView() {
         )}
       </div>
       <p className="mt-4 text-xs text-muted">
-        <span className="kbd">space</span> start / pause · elapsed {fmtDuration(t.elapsed())}
+        <span className="kbd">space</span> start / pause · {countUp ? `logged when you finish · stops by itself at ${COUNTUP_MAX_SECONDS / 3600} h` : `elapsed ${fmtDuration(elapsed)}`}
       </p>
       {t.alarmPlaying && (
         <button className="btn btn-primary mt-3 rounded-full px-4" onClick={t.stopAlarm} title="Stop the bell (Esc)">
@@ -195,7 +207,7 @@ export function TimerView() {
         open={t.abortPrompt}
         onOpenChange={(o) => !o && t.cancelAbort()}
         title="Abort this session?"
-        description={`You've studied for ${fmtDuration(t.elapsed())} of ${fmtDuration(t.plannedSeconds)}. Credit that time or discard it?`}
+        description={countUp ? `You have counted ${fmtDuration(t.elapsed())}. Log that time or discard it?` : `You've studied for ${fmtDuration(t.elapsed())} of ${fmtDuration(t.plannedSeconds)}. Credit that time or discard it?`}
         footer={
           <>
             <button className="btn" onClick={t.cancelAbort}>

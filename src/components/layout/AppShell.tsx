@@ -38,7 +38,7 @@ export function AppShell() {
 
   const phase = useTimer((s) => s.phase);
   const tick = useTimer((s) => s.tick);
-  const remaining = useTimer((s) => s.remaining)();
+  const remaining = useTimer((s) => s.shown)();
   void tick;
 
   // Global keyboard shortcuts

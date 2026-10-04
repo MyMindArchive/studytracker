@@ -10,8 +10,22 @@ export type Phase = "idle" | "running" | "paused";
 
 type PendingSession = Omit<Session, "id" | "tz_offset">;
 
+export type TimerMode = "single" | "cycle" | "countup";
+export const TIMER_MODES: { id: TimerMode; label: string }[] = [
+  { id: "single", label: "Single" },
+  { id: "cycle", label: "Cycle" },
+  { id: "countup", label: "Count up" },
+];
+
+/**
+ * A count-up runs open-ended, but not forever: a stopwatch left running
+ * overnight would otherwise log a day of study nobody did. At this cap it
+ * stops by itself and logs what it counted.
+ */
+export const COUNTUP_MAX_SECONDS = 12 * 3600;
+
 interface TimerState {
-  mode: "single" | "cycle";
+  mode: TimerMode;
   singleMinutes: number;
   cycle: CycleDefaults;
   nodeId: string | null;
@@ -37,7 +51,7 @@ interface TimerState {
   /** the end-of-block bell is still sounding */
   alarmPlaying: boolean;
 
-  setMode(m: "single" | "cycle"): void;
+  setMode(m: TimerMode): void;
   setSingleMinutes(m: number): void;
   setCycle(c: Partial<CycleDefaults>): void;
   setNode(id: string | null): void;
@@ -53,12 +67,16 @@ interface TimerState {
   confirmAbort(credit: boolean): void;
   skipBreak(): void;
   stopCycle(): void;
+  /** count-up only: stop the clock and log the time counted so far */
+  finish(): void;
   resolveTagPrompt(nodeId: string | null): void;
   /** cut the end-of-block bell short */
   stopAlarm(): void;
 
   remaining(): number;
   elapsed(): number;
+  /** seconds the clock face shows: time left, or time counted for a count-up */
+  shown(): number;
 }
 
 let interval: ReturnType<typeof setInterval> | null = null;
@@ -111,8 +129,10 @@ export const useTimer = create<TimerState>((set, get) => {
     return {
       node_id: s.nodeId,
       cycle_id: s.mode === "cycle" ? s.cycleId : null,
-      mode: s.mode,
-      planned_seconds: s.plannedSeconds,
+      // The sessions table only knows single and cycle; a count-up is a single
+      // block whose plan is whatever it turned out to be.
+      mode: s.mode === "cycle" ? "cycle" : "single",
+      planned_seconds: s.mode === "countup" ? Math.max(0, Math.round(actual)) : s.plannedSeconds,
       actual_seconds: Math.max(0, Math.round(actual)),
       started_at: s.blockStartedAt ?? new Date().toISOString(),
       ended_at: new Date().toISOString(),
@@ -163,6 +183,11 @@ export const useTimer = create<TimerState>((set, get) => {
     clearTicker();
     if (s.blockKind === "work") {
       finishSession(buildSession("completed", s.plannedSeconds));
+      if (s.mode === "countup") {
+        alertUser("Count-up stopped", `Reached the ${COUNTUP_MAX_SECONDS / 3600} h limit; ${COUNTUP_MAX_SECONDS / 3600} h logged.`);
+        goIdle();
+        return;
+      }
       if (s.mode === "single") {
         alertUser("Session complete", `${Math.round(s.plannedSeconds / 60)} minutes logged.`);
         goIdle();
@@ -221,7 +246,10 @@ export const useTimer = create<TimerState>((set, get) => {
       stopAlarm();
       if (s.phase !== "idle") return;
       set({ askedTagThisRun: false });
-      if (s.mode === "single") {
+      if (s.mode === "countup") {
+        // Runs as a countdown from the cap, so the ticker stops it at 12 h like any other block.
+        beginBlock("work", COUNTUP_MAX_SECONDS);
+      } else if (s.mode === "single") {
         beginBlock("work", s.singleMinutes * 60);
       } else {
         set({ cycleId: uid(), round: 1 });
@@ -262,7 +290,7 @@ export const useTimer = create<TimerState>((set, get) => {
 
     extend(minutes) {
       const s = get();
-      if (s.phase === "idle") return;
+      if (s.phase === "idle" || s.mode === "countup") return;
       const add = minutes * 60;
       if (s.phase === "running" && s.endsAt !== null) set({ endsAt: s.endsAt + add * 1000, plannedSeconds: s.plannedSeconds + add });
       else set({ remainingAtPause: s.remainingAtPause + add, plannedSeconds: s.plannedSeconds + add });
@@ -303,6 +331,17 @@ export const useTimer = create<TimerState>((set, get) => {
       goIdle();
     },
 
+    finish() {
+      const s = get();
+      stopAlarm();
+      if (s.phase === "idle" || s.mode !== "countup") return;
+      const counted = Math.min(COUNTUP_MAX_SECONDS, get().elapsed());
+      clearTicker();
+      // Nothing is written until now; under a second is a stray click, not a session.
+      if (counted >= 1) finishSession(buildSession("completed", counted));
+      goIdle();
+    },
+
     resolveTagPrompt(nodeId) {
       const p = get().tagPrompt;
       if (!p) return;
@@ -322,6 +361,7 @@ export const useTimer = create<TimerState>((set, get) => {
       const s = get();
       if (s.phase === "running" && s.endsAt !== null) return Math.max(0, (s.endsAt - Date.now()) / 1000);
       if (s.phase === "paused") return s.remainingAtPause;
+      if (s.mode === "countup") return COUNTUP_MAX_SECONDS;
       return s.mode === "single" ? s.singleMinutes * 60 : s.cycle.workMinutes * 60;
     },
 
@@ -329,6 +369,11 @@ export const useTimer = create<TimerState>((set, get) => {
       const s = get();
       if (s.phase === "running" && s.runningSince !== null) return s.elapsedBefore + (Date.now() - s.runningSince) / 1000;
       return s.elapsedBefore;
+    },
+
+    shown() {
+      const s = get();
+      return s.mode === "countup" ? Math.min(COUNTUP_MAX_SECONDS, s.elapsed()) : s.remaining();
     },
   };
 });
