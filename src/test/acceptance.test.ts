@@ -378,7 +378,7 @@ describe("statistics", () => {
     await setPct(db, l.id, 50, now.toISOString());
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now)[0];
     expect(v.velocity).toBeCloseTo(10, 5);
-    expect(v.forecastWeeks).toBeCloseTo(5, 5);
+    expect(v.forecastPeriods).toBeCloseTo(5, 5);
   });
 
   it("paces a one-week-old project over that week, not over the empty weeks before it", async () => {
@@ -392,9 +392,9 @@ describe("statistics", () => {
 
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
     expect(v.currentPct).toBe(35);
-    expect(v.basisWeeks).toBeCloseTo(1, 5);
+    expect(v.basisPeriods).toBeCloseTo(1, 5);
     expect(v.velocity).toBeCloseTo(35, 5); // not 8.75
-    expect(v.forecastWeeks).toBeCloseTo(65 / 35, 5); // ~2 weeks, not ~8
+    expect(v.forecastPeriods).toBeCloseTo(65 / 35, 5); // ~2 weeks, not ~8
     expect(v.confidence).toBe("thin");
   });
 
@@ -411,12 +411,12 @@ describe("statistics", () => {
     await setPct(db, l.id, 40, now.toISOString());
     // Window forced to 8 so this covers the blanking, not the auto-sizing.
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now, 8).find((r) => r.subjectId === s.id)!;
-    expect(v.basisWeeks).toBeCloseTo(2, 5);
+    expect(v.basisPeriods).toBeCloseTo(2, 5);
     expect(v.velocity).toBeCloseTo(20, 5);
-    expect(v.weekly.length).toBe(8);
+    expect(v.series.length).toBe(8);
     // The chart leaves the pre-birth weeks blank rather than flat at 0.
-    expect(v.weekly.slice(0, 5).every((w) => w.pct === null)).toBe(true);
-    expect(v.weekly[v.weekly.length - 1].pct).toBe(40);
+    expect(v.series.slice(0, 5).every((w) => w.pct === null)).toBe(true);
+    expect(v.series[v.series.length - 1].pct).toBe(40);
   });
 
   it("backfilled sessions move a project's start back, correcting the pace", async () => {
@@ -429,7 +429,7 @@ describe("statistics", () => {
     // With nothing but today's entry it reads as a single day's work: a real
     // rate, but a steep one resting on one data point.
     const bare = velocity(await listNodes(db), await listPctHistory(db), [], now).find((r) => r.subjectId === s.id)!;
-    expect(bare.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(bare.basisPeriods).toBeCloseTo(1 / 7, 5);
     expect(bare.velocity).toBeCloseTo(27.8 * 7, 5);
     expect(bare.confidence).toBe("thin");
 
@@ -450,9 +450,9 @@ describe("statistics", () => {
     }
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
     expect(v.status).toBe("ok");
-    expect(v.basisWeeks).toBeCloseTo(4, 5);
+    expect(v.basisPeriods).toBeCloseTo(4, 5);
     expect(v.velocity).toBeCloseTo(27.8 / 4, 5); // ~7 pts/wk, not ~65
-    expect(v.forecastWeeks).toBeCloseTo((100 - 27.8) / (27.8 / 4), 5);
+    expect(v.forecastPeriods).toBeCloseTo((100 - 27.8) / (27.8 / 4), 5);
   });
 
   it("paces a project born today over a whole day, not over the hour it has lived", async () => {
@@ -464,7 +464,7 @@ describe("statistics", () => {
     // 48.3 points in a day, not 48.3 points in the minute since it was typed:
     // dividing by the clock here once produced four-figure rates.
     expect(v.status).toBe("ok");
-    expect(v.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(v.basisPeriods).toBeCloseTo(1 / 7, 5);
     expect(v.velocity).toBeCloseTo(48.3 * 7, 5);
     // A day of history is a day of history; the dot says so rather than hiding the row.
     expect(v.confidence).toBe("thin");
@@ -490,7 +490,7 @@ describe("statistics", () => {
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
     // The month-old discarded block must not become the project's start, which
     // would spread today's 20 points over four weeks and halve the pace.
-    expect(v.basisWeeks).toBeCloseTo(1 / 7, 5);
+    expect(v.basisPeriods).toBeCloseTo(1 / 7, 5);
     expect(v.velocity).toBeCloseTo(140, 5);
   });
 
@@ -503,7 +503,7 @@ describe("statistics", () => {
     ]);
     // A three-day-old project must not collapse the chart to a single column.
     let rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
-    expect(rows[0].weekly.length).toBe(5);
+    expect(rows[0].series.length).toBe(5);
 
     // A four-month project widens the window instead of cropping its history.
     const old = await createNode(db, { parent_id: null, name: "Old" });
@@ -512,7 +512,7 @@ describe("statistics", () => {
       old.id,
     ]);
     rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
-    expect(rows[0].weekly.length).toBe(19); // ceil(120/7) + 1
+    expect(rows[0].series.length).toBe(19); // ceil(120/7) + 1
 
     // …but never past the cap, so a year-old project stays readable.
     await db.execute("UPDATE nodes SET created_at = ? WHERE id = ?", [
@@ -520,7 +520,7 @@ describe("statistics", () => {
       old.id,
     ]);
     rows = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now);
-    expect(rows[0].weekly.length).toBe(26);
+    expect(rows[0].series.length).toBe(26);
   });
 
   it("a task added today does not retroactively lower past weeks", async () => {
@@ -536,7 +536,7 @@ describe("statistics", () => {
     // A brand new sibling at 0 % must not make last week look like 50 %.
     await createNode(db, { parent_id: s.id, name: "B" });
     const v = velocity(await listNodes(db), await listPctHistory(db), await listSessions(db), now).find((r) => r.subjectId === s.id)!;
-    const lastWeek = v.weekly[v.weekly.length - 2];
+    const lastWeek = v.series[v.series.length - 2];
     expect(lastWeek.pct).toBe(100);
     expect(v.currentPct).toBe(50);
   });
@@ -577,6 +577,41 @@ describe("statistics", () => {
     const f = rows.find((r) => r.subjectId === fine.id)!.outlook!;
     expect(f.projectedPct).toBe(100);
     expect(f.verdict).toBe("on-track");
+  });
+
+  it("counts pace, needed and the chart in 3-day periods when asked", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    // 30 points over the last week, 28 days to go: same facts as the weekly reading.
+    const s = await paced("Short", 30, "2026-10-14", now);
+    const v = velocity(await listNodes(db), await listPctHistory(db), [], now, undefined, undefined, 3).find((r) => r.subjectId === s.id)!;
+    expect(v.periodDays).toBe(3);
+    expect(v.basisPeriods).toBeCloseTo(7 / 3, 5);
+    expect(v.velocity).toBeCloseTo(30 / (7 / 3), 5); // ~12.9 pts per 3 days
+    expect(v.outlook!.needed).toBeCloseTo(70 / (28 / 3), 5);
+    // Unit-free answers do not change with the period.
+    expect(v.outlook!.projectedPct).toBe(100);
+    expect(v.etaDate!.getTime()).toBeCloseTo(now.getTime() + (70 / 30) * 7 * 86_400_000, -3);
+    // Readings every 3 days, the last one today.
+    const keys = v.series.map((p) => p.key);
+    expect(keys[keys.length - 1]).toBe("2026-09-14");
+    expect(keys[keys.length - 2]).toBe("2026-09-11");
+  });
+
+  it("looks back six periods, so a short period forgets old work sooner", async () => {
+    const now = new Date("2026-09-16T12:00:00");
+    const s = await createNode(db, { parent_id: null, name: "Burst" });
+    const l = await createNode(db, { parent_id: s.id, name: "L" });
+    await db.execute("UPDATE nodes SET created_at = ? WHERE id IN (?,?)", [new Date(now.getTime() - 40 * 86_400_000).toISOString(), s.id, l.id]);
+    // A 60-point burst a month ago, then 6 points in the last few days.
+    await setPct(db, l.id, 60, new Date(now.getTime() - 30 * 86_400_000).toISOString());
+    await setPct(db, l.id, 66, new Date(now.getTime() - 2 * 86_400_000).toISOString());
+    const nodes = await listNodes(db);
+    const hist = await listPctHistory(db);
+    const weekly = velocity(nodes, hist, [], now, undefined, undefined, 7).find((r) => r.subjectId === s.id)!;
+    const short = velocity(nodes, hist, [], now, undefined, undefined, 3).find((r) => r.subjectId === s.id)!;
+    expect(weekly.gained).toBeCloseTo(66, 5); // 42-day window still holds the burst
+    expect(short.gained).toBeCloseTo(6, 5); // 18-day window does not
+    expect(short.basisPeriods).toBeCloseTo(6, 5);
   });
 
   it("pace >= needed and projected >= 100 are the same verdict, never contradictory", async () => {

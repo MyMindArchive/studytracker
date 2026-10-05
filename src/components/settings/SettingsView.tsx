@@ -11,11 +11,18 @@ import { backupCounts, type BackupFile } from "../../lib/backup";
 import { backupFromFiles, type PickedFile } from "../../lib/restore";
 import { mirrorFiles, writeMirror } from "../../lib/mirror";
 import { DB_FILENAME, rememberStoragePath } from "../../db";
-import { ROLLUP_MODES, type Settings } from "../../types";
+import { PACE_PERIODS, ROLLUP_MODES, type PacePeriodDays, type Settings } from "../../types";
 import { ROLLUP_HELP, ROLLUP_LABEL } from "../../lib/rollup";
 import { SKINS } from "../../lib/skins";
 import { cn } from "../../lib/cn";
 import { SqlJsDriver } from "../../db/sqljs";
+
+const PACE_PERIOD_LABEL: Record<PacePeriodDays, string> = { 2: "2 days", 3: "3 days", 7: "Week" };
+const PACE_PERIOD_HELP: Record<PacePeriodDays, string> = {
+  2: "Reacts fastest; looks back 12 days. Jumpy if you skip a day.",
+  3: "Looks back 18 days. Follows a change in pace within a week or so.",
+  7: "Calendar weeks, looking back 6 weeks. Steadiest, slowest to react.",
+};
 
 export function SettingsView() {
   const settings = useApp((s) => s.settings);
@@ -403,6 +410,17 @@ export function SettingsView() {
               <button key={m} className="choice" data-active={settings.rollup_mode === m} onClick={() => update("rollup_mode", m)}>
                 <span className="block text-sm font-medium">{ROLLUP_LABEL[m]}</span>
                 <span className="mt-0.5 block text-xs text-muted">{ROLLUP_HELP[m]}</span>
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="Pace period" desc="How the dashboard counts pace and Needed, and how often the pace chart takes a reading. Pace also looks back six periods at most.">
+          <div className="grid gap-2 md:grid-cols-3">
+            {PACE_PERIODS.map((p) => (
+              <button key={p} className="choice" data-active={settings.pace_period_days === p} onClick={() => update("pace_period_days", p)}>
+                <span className="block text-sm font-medium">{PACE_PERIOD_LABEL[p]}</span>
+                <span className="mt-0.5 block text-xs text-muted">{PACE_PERIOD_HELP[p]}</span>
               </button>
             ))}
           </div>

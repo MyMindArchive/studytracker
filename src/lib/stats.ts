@@ -1,7 +1,7 @@
-import { addWeeks, differenceInCalendarDays, endOfWeek, startOfDay, subDays } from "date-fns";
+import { addWeeks, differenceInCalendarDays, endOfDay, endOfWeek, startOfDay, subDays } from "date-fns";
 import type { DbNode, PctHistory, Session, SessionSource, StatusHistory } from "../types";
 import { computeRollup, childrenOf, hoursPerUnit, subjectIndex, type NodeRollup } from "./rollup";
-import type { RollupMode } from "../types";
+import type { PacePeriodDays, RollupMode } from "../types";
 import { bucketKey, dayKey, fromIso, listWeekStarts, streak, weekKey, weekStart, WEEK_STARTS_ON } from "./time";
 import { effectiveDeadlines } from "./treeSort";
 
@@ -217,10 +217,10 @@ export function plannedVsActual(nodes: DbNode[], sessions: Session[], roll?: Map
 /* ----------------------------------------------------------- velocity */
 
 /**
- * How far back the pace looks. Work older than this should not keep holding a
- * project's forecast down once the pace has changed.
+ * How far back the pace looks, in periods. Work older than this should not
+ * keep holding a project's forecast down once the pace has changed.
  */
-export const PACE_WINDOW_WEEKS = 6;
+export const PACE_WINDOW_PERIODS = 6;
 /**
  * Pace divides by whole elapsed days, never a fraction of one. Dividing 30 %
  * by half a day of history once produced "420 pts/wk, done tomorrow" — a
@@ -239,8 +239,8 @@ const DAY_MS = 86_400_000;
  * 8 weeks either squeezes a long one or strands a short one in a sliver at the
  * right edge.
  */
-const MIN_CHART_WEEKS = 5;
-const MAX_CHART_WEEKS = 26;
+const MIN_CHART_PERIODS = 5;
+const MAX_CHART_PERIODS = 26;
 
 /** How much history the pace rests on. */
 export type VelocityConfidence = "none" | "thin" | "fair" | "good";
@@ -250,21 +250,23 @@ export interface VelocityRow {
   name: string;
   color: string | null;
   currentPct: number;
-  /** pct at the end of each week (oldest first); null for weeks before the project existed */
-  weekly: { week: string; pct: number | null }[];
-  /** percentage points per week, measured over `basisWeeks` — never over empty weeks before the start */
+  /** days in one period; every per-period number below counts in these */
+  periodDays: PacePeriodDays;
+  /** pct at the end of each period (oldest first), keyed by the period's first day; null before the project existed */
+  series: { key: string; pct: number | null }[];
+  /** percentage points per period, measured over `basisPeriods` — never over empty periods before the start */
   velocity: number;
-  /** pace counting only the weeks that actually moved */
+  /** pace counting only the periods that actually moved */
   activePace: number;
   /** percentage points gained over the measured span */
   gained: number;
-  /** length of the measured span in weeks (fractional); starts at the project, not 8 weeks ago */
-  basisWeeks: number;
-  /** whole weeks inside the span that moved forward */
-  activeWeeks: number;
-  /** weeks to 100 at `velocity`; 0 when done, null when stalled or going backwards */
-  forecastWeeks: number | null;
-  /** projected finish date; null whenever `forecastWeeks` is */
+  /** length of the measured span in periods (fractional); starts at the project, not at the window edge */
+  basisPeriods: number;
+  /** whole periods inside the span that moved forward */
+  activePeriods: number;
+  /** periods to 100 at `velocity`; 0 when done, null when stalled or going backwards */
+  forecastPeriods: number | null;
+  /** projected finish date; null whenever `forecastPeriods` is */
   etaDate: Date | null;
   confidence: VelocityConfidence;
   /** what the finish column should say, so the UI does not re-derive it */
@@ -284,7 +286,7 @@ export type VelocityStatus = "done" | "stalled" | "ok";
 
 /**
  *  on-track  the current pace lands on 100 by the deadline
- *  tight     it lands just short — a bad week decides it
+ *  tight     it lands just short — a bad period decides it
  *  behind    it lands well short; the pace has to change
  *  overdue   the date has passed with work still open
  *  done      finished, whatever the date says
@@ -306,7 +308,7 @@ export interface DeadlineOutlook {
   inherited: boolean;
   /** whole days from today to the deadline; negative once it has passed */
   daysLeft: number;
-  /** percentage points per week needed from here to finish on time; null once the date has passed */
+  /** percentage points per period needed from here to finish on time; null once the date has passed */
   needed: number | null;
   /** where the current pace lands on the day, 0..100 */
   projectedPct: number;
@@ -373,12 +375,12 @@ export function pctAsOf(nodes: DbNode[], history: PctHistory[], at: Date, born?:
  * Pace and finish date per project.
  *
  * The pace is `points gained ÷ time it took`, measured from whichever is later:
- * the moment the project started, or `PACE_WINDOW_WEEKS` ago. Weeks before a
+ * the moment the project started, or `PACE_WINDOW_PERIODS` ago. Periods before a
  * project existed are never averaged in — that is what used to turn "35 % in
  * one week" into "8 weeks to go" (a 35-point jump divided across four weeks,
  * three of which the project did not exist for).
  *
- * Idle weeks *after* the start still count, because a month off is a real part
+ * Idle periods *after* the start still count, because a month off is a real part
  * of how fast a project is moving; `activePace` reports the other reading.
  */
 /**
@@ -391,6 +393,7 @@ function outlookFor(
   currentPct: number,
   pace: number,
   now: Date,
+  periodDays: number,
 ): DeadlineOutlook | null {
   if (!deadline) return null;
   const date = fromIso(deadline.date);
@@ -403,16 +406,24 @@ function outlookFor(
   if (daysLeft < 0) {
     return { date, inherited: deadline.inherited, daysLeft, needed: null, projectedPct: currentPct, verdict: "overdue" };
   }
-  // Due today still leaves today: a whole week's worth of "needed" rather than
+  // Due today still leaves today: a whole day's worth of "needed" rather than
   // a division by zero, which is also the honest reading — finish it today.
-  const weeksLeft = Math.max(1, daysLeft) / 7;
-  const needed = (100 - currentPct) / weeksLeft;
-  const projectedPct = Math.min(100, Math.max(0, currentPct + Math.max(0, pace) * weeksLeft));
+  const periodsLeft = Math.max(1, daysLeft) / periodDays;
+  const needed = (100 - currentPct) / periodsLeft;
+  const projectedPct = Math.min(100, Math.max(0, currentPct + Math.max(0, pace) * periodsLeft));
   const verdict: DeadlineVerdict = projectedPct >= 100 ? "on-track" : projectedPct >= TIGHT_PCT ? "tight" : "behind";
   return { date, inherited: deadline.inherited, daysLeft, needed, projectedPct, verdict };
 }
 
-export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Session[] = [], now = new Date(), weeks?: number, mode?: RollupMode): VelocityRow[] {
+export function velocity(
+  nodes: DbNode[],
+  history: PctHistory[],
+  sessions: Session[] = [],
+  now = new Date(),
+  periods?: number,
+  mode?: RollupMode,
+  periodDays: PacePeriodDays = 7,
+): VelocityRow[] {
   const subjects = nodes.filter((n) => n.parent_id === null);
   const current = computeRollup(nodes, mode);
   const kids = new Map<string | null, DbNode[]>();
@@ -443,21 +454,30 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
   }
 
   // Fit the window to the oldest project so a two-week project fills the chart
-  // and a five-month one still fits, instead of always drawing eight weeks.
-  let span = weeks;
+  // and a five-month one still fits, instead of always drawing eight periods.
+  const periodMs = periodDays * DAY_MS;
+  let span = periods;
   if (span === undefined) {
     const oldest = startOf.size ? Math.min(...startOf.values()) : nowMs;
-    const lived = Math.ceil((nowMs - oldest) / (7 * DAY_MS)) + 1;
-    span = Math.max(MIN_CHART_WEEKS, Math.min(MAX_CHART_WEEKS, lived));
+    const lived = Math.ceil((nowMs - oldest) / periodMs) + 1;
+    span = Math.max(MIN_CHART_PERIODS, Math.min(MAX_CHART_PERIODS, lived));
   }
 
-  const weekEnds: Date[] = [];
+  // Weeks keep to the calendar so they line up with the weekly hours; shorter
+  // periods have no calendar to follow and simply end today.
+  const ends: { key: string; end: Date }[] = [];
   for (let i = span - 1; i >= 0; i--) {
-    weekEnds.push(endOfWeek(addWeeks(now, -i), { weekStartsOn: WEEK_STARTS_ON }));
+    if (periodDays === 7) {
+      const end = endOfWeek(addWeeks(now, -i), { weekStartsOn: WEEK_STARTS_ON });
+      ends.push({ key: weekKey(end), end });
+    } else {
+      const end = endOfDay(subDays(now, i * periodDays));
+      ends.push({ key: dayKey(subDays(end, periodDays - 1)), end });
+    }
   }
-  const snapshots = weekEnds.map((we) => {
-    const at = we.getTime() > nowMs ? now : we;
-    return { week: weekKey(we), at: at.getTime(), roll: computeRollup(pctAsOf(nodes, history, at, born), mode) };
+  const snapshots = ends.map(({ key, end }) => {
+    const at = end.getTime() > nowMs ? now : end;
+    return { key, at: at.getTime(), roll: computeRollup(pctAsOf(nodes, history, at, born), mode) };
   });
 
   // Several projects usually share the same clamped window start; roll up once each.
@@ -474,8 +494,8 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
   return subjects.map((s) => {
     const startedMs = startOf.get(s.id) ?? nowMs;
     const startedAt = startOf.has(s.id) ? new Date(startedMs) : null;
-    const weekly = snapshots.map((sn) => ({
-      week: sn.week,
+    const series = snapshots.map((sn) => ({
+      key: sn.key,
       pct: sn.at < startedMs ? null : (sn.roll.get(s.id)?.pct ?? 0),
     }));
 
@@ -484,33 +504,33 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
     // otherwise be read at the same instant it started, gain nothing, and
     // report itself stalled. Reaching back past its birth costs nothing — it
     // was at 0 then — and turns that into "27 points today".
-    const spanStartMs = Math.min(Math.max(startedMs, nowMs - PACE_WINDOW_WEEKS * 7 * DAY_MS), nowMs - MIN_PACE_DAYS * DAY_MS);
+    const spanStartMs = Math.min(Math.max(startedMs, nowMs - PACE_WINDOW_PERIODS * periodMs), nowMs - MIN_PACE_DAYS * DAY_MS);
     const pctThen = rollupAt(spanStartMs).get(s.id)?.pct ?? 0;
     const gained = cur - pctThen;
     const spanDays = Math.max(MIN_PACE_DAYS, Math.round((nowMs - spanStartMs) / DAY_MS));
-    const basisWeeks = spanDays / 7;
-    const v = gained / basisWeeks;
+    const basisPeriods = spanDays / periodDays;
+    const v = gained / basisPeriods;
 
-    let activeWeeks = 0;
-    for (let i = 1; i < weekly.length; i++) {
+    let activePeriods = 0;
+    for (let i = 1; i < series.length; i++) {
       if (snapshots[i].at < spanStartMs) continue;
-      const b = weekly[i].pct;
+      const b = series[i].pct;
       if (b === null) continue;
-      if (b - (weekly[i - 1].pct ?? 0) > 0.05) activeWeeks++;
+      if (b - (series[i - 1].pct ?? 0) > 0.05) activePeriods++;
     }
-    // All of the gain can land inside a single part-week that has no delta yet.
-    if (activeWeeks === 0 && gained > 0.05) activeWeeks = 1;
-    const activePace = activeWeeks > 0 ? gained / activeWeeks : 0;
+    // All of the gain can land inside a single part-period that has no delta yet.
+    if (activePeriods === 0 && gained > 0.05) activePeriods = 1;
+    const activePace = activePeriods > 0 ? gained / activePeriods : 0;
 
     const status: VelocityStatus = cur >= 100 ? "done" : v > 0 ? "ok" : "stalled";
-    const forecastWeeks = status === "done" ? 0 : status === "ok" ? (100 - cur) / v : null;
-    const etaDate = forecastWeeks === null || forecastWeeks === 0 ? null : new Date(nowMs + forecastWeeks * 7 * DAY_MS);
+    const forecastPeriods = status === "done" ? 0 : status === "ok" ? (100 - cur) / v : null;
+    const etaDate = forecastPeriods === null || forecastPeriods === 0 ? null : new Date(nowMs + forecastPeriods * periodMs);
     const confidence: VelocityConfidence =
       gained <= 0.05
         ? "none"
-        : basisWeeks < 1 || activeWeeks <= 1
+        : basisPeriods < 1 || activePeriods <= 1
           ? "thin"
-          : basisWeeks >= 3 && activeWeeks >= 3
+          : basisPeriods >= 3 && activePeriods >= 3
             ? "good"
             : "fair";
 
@@ -519,18 +539,19 @@ export function velocity(nodes: DbNode[], history: PctHistory[], sessions: Sessi
       name: s.name,
       color: s.color,
       currentPct: cur,
-      weekly,
+      periodDays,
+      series,
       velocity: v,
       activePace,
       gained,
-      basisWeeks,
-      activeWeeks,
-      forecastWeeks,
+      basisPeriods,
+      activePeriods,
+      forecastPeriods,
       etaDate,
       confidence,
       status,
       startedAt,
-      outlook: outlookFor(deadlines.get(s.id), cur, v, now),
+      outlook: outlookFor(deadlines.get(s.id), cur, v, now, periodDays),
     };
   });
 }

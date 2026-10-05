@@ -10,6 +10,13 @@ export type RollupMode = "equal" | "weight" | "effort";
 export const ROLLUP_MODES: RollupMode[] = ["equal", "weight", "effort"];
 
 /**
+ * Length of one pace period in days. Pace, Needed and the dashboard chart all
+ * count in these; a week is the calendar week, shorter periods end today.
+ */
+export const PACE_PERIODS = [2, 3, 7] as const;
+export type PacePeriodDays = (typeof PACE_PERIODS)[number];
+
+/**
  * An explicit state that the percent cannot express. Percent already says
  * not-started / in-progress / done, so this only carries what it cannot:
  * work that is waiting on something outside your control. NULL means "read it
@@ -220,6 +227,8 @@ export interface Settings {
   csv_mirror: boolean;
   /** default roll-up rule for nodes that do not set their own */
   rollup_mode: RollupMode;
+  /** days in one pace period on the dashboard */
+  pace_period_days: PacePeriodDays;
   /** focus screen backdrop; null = plain panel */
   timer_background: MediaAsset | null;
   /** translucent wash over the backdrop, 0..0.9 */
@@ -248,6 +257,7 @@ export const DEFAULT_SETTINGS: Settings = {
   unassigned_badge_threshold_hours: 1,
   csv_mirror: true,
   rollup_mode: "equal",
+  pace_period_days: 3,
   timer_background: null,
   timer_overlay: 0.45,
   timer_overlay_tone: "dark",

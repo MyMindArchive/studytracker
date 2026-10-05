@@ -1,6 +1,6 @@
 import type { SqlDriver } from "./driver";
 import type { ChecklistItem, DbNode, MediaAsset, NodeStatus, PctHistory, RollupMode, Session, SessionSource, Settings, StatusHistory } from "../types";
-import { clampPriority, DEFAULT_SETTINGS, ROLLUP_MODES, SESSION_SOURCES } from "../types";
+import { clampPriority, DEFAULT_SETTINGS, PACE_PERIODS, ROLLUP_MODES, SESSION_SOURCES } from "../types";
 import { SKIN_IDS } from "../lib/skins";
 import { uid, nowIso } from "../lib/ids";
 import type { BackupData } from "../lib/backup";
@@ -570,6 +570,7 @@ export function sanitizeSettings(raw: Record<string, unknown>): Settings {
     unassigned_badge_threshold_hours: finiteOr(raw.unassigned_badge_threshold_hours, d.unassigned_badge_threshold_hours),
     csv_mirror: typeof raw.csv_mirror === "boolean" ? raw.csv_mirror : d.csv_mirror,
     rollup_mode: oneOf(raw.rollup_mode, ROLLUP_MODES, d.rollup_mode),
+    pace_period_days: (PACE_PERIODS as readonly unknown[]).includes(raw.pace_period_days) ? (raw.pace_period_days as Settings["pace_period_days"]) : d.pace_period_days,
     timer_background: isMedia(raw.timer_background) ? raw.timer_background : null,
     timer_overlay: Math.min(0.9, finiteOr(raw.timer_overlay, d.timer_overlay)),
     timer_overlay_tone: oneOf(raw.timer_overlay_tone, ["dark", "light"] as const, d.timer_overlay_tone),

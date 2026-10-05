@@ -14,7 +14,7 @@ import {
   velocity,
   IDLE_DAYS,
   MIN_SUPPORT,
-  PACE_WINDOW_WEEKS,
+  PACE_WINDOW_PERIODS,
   UNASSIGNED,
   type AgingFlag,
   type DeadlineOutlook,
@@ -39,6 +39,7 @@ export function DashboardView() {
   const statusHistory = useApp((s) => s.statusHistory);
   const rollup = useApp((s) => s.rollup);
   const dailyTarget = useApp((s) => s.settings.daily_target_hours);
+  const periodDays = useApp((s) => s.settings.pace_period_days);
   const select = useApp((s) => s.select);
   const setView = useApp((s) => s.setView);
   const [period, setPeriod] = useState<"day" | "week" | "month">("day");
@@ -49,19 +50,20 @@ export function DashboardView() {
   const week = useMemo(() => thisWeekBySubject(nodes, sessions, now), [nodes, sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   const series = useMemo(() => timeBySubject(nodes, sessions, period, now), [nodes, sessions, period]); // eslint-disable-line react-hooks/exhaustive-deps
   const pva = useMemo(() => plannedVsActual(nodes, sessions, rollup), [nodes, sessions, rollup]);
-  const vel = useMemo(() => velocity(nodes, history, sessions, now), [nodes, history, sessions]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vel = useMemo(() => velocity(nodes, history, sessions, now, undefined, undefined, periodDays), [nodes, history, sessions, periodDays]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unit = periodUnit(periodDays);
   const stats = useMemo(() => sessionStats(sessions, now), [sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   const aging = useMemo(() => agingWip(nodes, history, sessions, statusHistory, now), [nodes, history, sessions, statusHistory]); // eslint-disable-line react-hooks/exhaustive-deps
   const bias = useMemo(() => estimateBias(nodes, sessions), [nodes, sessions]);
   const rework = useMemo(() => reworkRate(nodes, history), [nodes, history]);
 
   const velocityRows = useMemo(() => {
-    const weeks = vel[0]?.weekly.map((w) => w.week) ?? [];
-    return weeks.map((wk, i) => {
-      // null leaves a gap in the line for weeks before the project existed
-      const row: Record<string, string | number | null> = { week: fmtKeyShort(wk) };
+    const keys = vel[0]?.series.map((p) => p.key) ?? [];
+    return keys.map((key, i) => {
+      // null leaves a gap in the line for periods before the project existed
+      const row: Record<string, string | number | null> = { period: fmtKeyShort(key) };
       for (const v of vel) {
-        const pct = v.weekly[i].pct;
+        const pct = v.series[i].pct;
         row[v.subjectId] = pct === null ? null : Math.round(pct * 10) / 10;
       }
       return row;
@@ -276,7 +278,7 @@ export function DashboardView() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={velocityRows} margin={{ top: 8, right: 16, left: -20, bottom: 0 }}>
                     <CartesianGrid vertical={false} stroke="var(--border)" />
-                    <XAxis dataKey="week" tick={{ fontSize: 10, fill: "var(--muted)" }} interval="preserveStartEnd" minTickGap={16} />
+                    <XAxis dataKey="period" tick={{ fontSize: 10, fill: "var(--muted)" }} interval="preserveStartEnd" minTickGap={16} />
                     <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: "var(--muted)" }} />
                     <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => `${v}%`} />
                     {vel.map((v) => (
@@ -300,11 +302,11 @@ export function DashboardView() {
                   <tr>
                     <th className="py-1">Project</th>
                     <th className="w-16 py-1 text-right">Now</th>
-                    <th className="w-24 py-1 text-right" title="Percentage points you are gaining per week">
-                      Pace <span className="font-normal opacity-70">pts/wk</span>
+                    <th className="w-24 py-1 text-right" title={`Percentage points you are gaining per ${unit.long}`}>
+                      Pace <span className="font-normal opacity-70">pts/{unit.short}</span>
                     </th>
-                    <th className="w-24 py-1 text-right" title="Percentage points per week needed from today to finish by the deadline">
-                      Needed <span className="font-normal opacity-70">pts/wk</span>
+                    <th className="w-24 py-1 text-right" title={`Percentage points per ${unit.long} needed from today to finish by the deadline`}>
+                      Needed <span className="font-normal opacity-70">pts/{unit.short}</span>
                     </th>
                     <th className="w-36 py-1 text-right" title="Where this pace lands you on the deadline. Under 100 % means you miss it.">
                       By deadline
@@ -321,7 +323,7 @@ export function DashboardView() {
                 </tbody>
               </table>
               <Explainer>
-                Pace is the points you gained divided by the days it took, counted from the day a project started (at most {PACE_WINDOW_WEEKS} weeks back). A
+                Pace is the points you gained divided by the days it took, counted from the day a project started (at most {PACE_WINDOW_PERIODS} periods of {periodDays} days back; the period length is in Settings). A
                 project starts at the earliest of its creation or its first logged session, so backfilling hours you already put in moves the start back and
                 corrects the pace. Needed is what it would take from today to reach 100&thinsp;% by the deadline &mdash; a project&rsquo;s own date, or the
                 nearest one among its unfinished tasks. Compare the two: pace below needed is the gap you have to make up, and &ldquo;By deadline&rdquo; is
@@ -583,14 +585,22 @@ function fmtAxis(v: number, minutes: boolean): string {
 /* --------------------------------------------------------------- pace */
 
 /** "3 days", "1.0 wk", "6 wk" — the span a pace was measured over. */
-function fmtSpan(weeks: number): string {
-  if (weeks < 1) return `${Math.max(1, Math.round(weeks * 7))} d`;
+/** How a pace period reads: "wk" / "week" for seven days, "3d" / "3 days" otherwise. */
+function periodUnit(days: number): { short: string; long: string } {
+  return days === 7 ? { short: "wk", long: "week" } : { short: `${days}d`, long: `${days} days` };
+}
+
+function fmtSpan(days: number): string {
+  if (days < 14) return `${Math.max(1, Math.round(days))} d`;
+  const weeks = days / 7;
   return `${weeks < 3 ? weeks.toFixed(1) : Math.round(weeks)} wk`;
 }
 
-/** "~2 wk", "<1 wk", "9 mo" — never a precision the number does not have. */
-function fmtRemaining(weeks: number): string {
-  if (weeks < 1) return "<1 wk";
+/** "~4 d", "~2 wk", "9 mo" — never a precision the number does not have. */
+function fmtRemaining(days: number): string {
+  if (days < 1) return "<1 d";
+  if (days < 14) return `~${Math.round(days)} d`;
+  const weeks = days / 7;
   if (weeks < 8) return `~${Math.round(weeks)} wk`;
   if (weeks < 52) return `~${Math.round(weeks / 4.345)} mo`;
   return "over a year";
@@ -602,7 +612,7 @@ function fmtEta(d: Date, now = new Date()): string {
 }
 
 /**
- * Small dot per week, fat ringed dot on the latest one — "where this project
+ * Small dot per period, fat ringed dot on the latest one — "where this project
  * stands now" should be findable without reading the axis.
  */
 function paceDot(color: string, lastIndex: number) {
@@ -632,9 +642,9 @@ const CONFIDENCE_DOT: Record<VelocityRow["confidence"], string> = {
 
 const CONFIDENCE_WHY: Record<VelocityRow["confidence"], string> = {
   none: "Nothing has moved yet, so there is no pace to measure.",
-  thin: "Only one week of real movement so far — one good or bad week will swing this a lot.",
-  fair: "A few weeks of movement. Usable, still jumpy.",
-  good: "Several weeks of steady movement behind this.",
+  thin: "Only one period of real movement so far — one good or bad period will swing this a lot.",
+  fair: "A few periods of movement. Usable, still jumpy.",
+  good: "Several periods of steady movement behind this.",
 };
 
 const VERDICT_TONE: Record<DeadlineVerdict, string> = {
@@ -647,9 +657,11 @@ const VERDICT_TONE: Record<DeadlineVerdict, string> = {
 
 function PaceRow({ v }: { v: VelocityRow }) {
   const o = v.outlook;
+  const unit = periodUnit(v.periodDays);
+  const what = v.periodDays === 7 ? "week" : "period";
   const why = [
-    `${v.gained >= 0 ? "+" : ""}${v.gained.toFixed(1)} points over ${fmtSpan(v.basisWeeks)}`,
-    `${v.activeWeeks} week${v.activeWeeks === 1 ? "" : "s"} of that moved (${v.activePace.toFixed(1)} pts/wk while working)`,
+    `${v.gained >= 0 ? "+" : ""}${v.gained.toFixed(1)} points over ${fmtSpan(v.basisPeriods * v.periodDays)}`,
+    `${v.activePeriods} ${what}${v.activePeriods === 1 ? "" : "s"} of that moved (${v.activePace.toFixed(1)} pts/${unit.short} while working)`,
     v.startedAt ? `started ${fmtEta(v.startedAt)}` : null,
     CONFIDENCE_WHY[v.confidence],
     o ? deadlineWhy(v, o) : "No deadline on this project or its tasks, so there is nothing to be on track for.",
@@ -697,7 +709,7 @@ function PaceRow({ v }: { v: VelocityRow }) {
           </span>
         ) : (
           <span className="whitespace-nowrap tabular-nums">
-            {fmtRemaining(v.forecastWeeks!)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
+            {fmtRemaining(v.forecastPeriods! * v.periodDays)} <span className="text-muted">· {fmtEta(v.etaDate)}</span>
           </span>
         )}
       </td>
@@ -711,7 +723,7 @@ function deadlineWhy(v: VelocityRow, o: DeadlineOutlook): string {
   if (o.verdict === "done") return `Finished. Deadline was ${when}.`;
   if (o.verdict === "overdue") return `Deadline ${when} has passed with ${(100 - v.currentPct).toFixed(0)} points still open.`;
   const days = o.daysLeft === 0 ? "today" : `in ${o.daysLeft} day${o.daysLeft === 1 ? "" : "s"}`;
-  const rate = `You are gaining ${fmtPts(v.velocity)} pts/wk and need ${fmtPts(o.needed!)}.`;
+  const rate = `You are gaining ${fmtPts(v.velocity)} pts/${periodUnit(v.periodDays).short} and need ${fmtPts(o.needed!)}.`;
   if (o.verdict === "on-track") return `Due ${when}, ${days}. ${rate} This pace gets there.`;
   return `Due ${when}, ${days}. ${rate} This pace lands at ${o.projectedPct.toFixed(0)} %, ${(100 - o.projectedPct).toFixed(0)} points short.`;
 }
